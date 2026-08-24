@@ -44,7 +44,7 @@ public class ScoreboardController implements Listener {
 		} catch (NoPacketAdapterAvailableException e) {
 			scoreboardLibrary = new NoopScoreboardLibrary();
 			logger.severe("Scoreboard functionality will not be visible due to server version not being " +
-					"supported. If you are running the latest ezAuctions, please report this issue on GitHub.", e);
+					"supported. If you are running the latest RookieAuctions, please report this issue on GitHub.", e);
 		} catch (RuntimeException e) {
 			scoreboardLibrary = new NoopScoreboardLibrary();
 			logger.info("Scoreboard functionality will not be visible due to error with plugin build. " +

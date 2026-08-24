@@ -1,25 +1,26 @@
-# ezAuctions Configuration File #
-#################################
+# RookieAuctions Configuration File #
+#####################################
 
 data:
   # Out of the box support for MySQL, MariaDB, and SQLite
   # You can add support for Postgres, Microsoft SQL Server, H2, Derby, HSQLDB by including the appropriate drivers
   # in your server
   # If using something other than SQLite you must specify an EXISTING database
-  # example sqlite connection string 'jdbc:sqlite:plugins/ezAuctions/sqlite.db'
+  # sqlite.db is resolved inside the RookieAuctions plugin data directory
+  # example sqlite connection string 'jdbc:sqlite:sqlite.db'
   # example mysql connection string jdbc:mysql://host:port/database?useSSL=false
   #                                 jdbc:mysql://localhost:3306/production?useSSL=false
   #                   for mariadb:  jdbc:mariadb://localhost:3306/production?useSSL=false
-  connection-string: 'jdbc:sqlite:plugins/ezAuctions/sqlite.db'
+  connection-string: 'jdbc:sqlite:sqlite.db'
   # leave blank if using sqlite
   username: ''
   password: ''
 
 general:
-  # Should we check for updates and notify players on join? Permission is ezauctions.updatemessage
-  check-updates: true
+  # Should we check for updates and notify players on join? Permission is rookieauctions.updatemessage
+  check-updates: false
   # Should we automatically download and apply plugin updates
-  auto-update: true
+  auto-update: false
   # Time between auctions (in seconds)
   time-between: 5
   # Players cannot do /auc cancel when the auction time is under this
@@ -29,7 +30,7 @@ general:
   # When putting auctions into the queue, what is the time in seconds that the player must wait before they
   # are allowed to start an auction again?
   # Set to 0 to disable
-  # use ezauctions.cooldownexempt permission to bypass this
+  # use rookieauctions.cooldownexempt permission to bypass this
   queue-cooldown-time: 0
   # when true, an info line containing the item and NBT will be logged to console whenever
   # an auction enters/leaves queue or starts
@@ -113,7 +114,7 @@ auctions:
     starting-price: 0
 
   maximum:
-    auction-time: -1
+    auction-time: 300
     increment: 0
     autobuy: 10000000
     # How many times can a player bid in a row before someone else bids?
@@ -140,7 +141,14 @@ antisnipe:
 
 # Scoreboard for auctions. Auto-updating
 scoreboard:
-  enabled: true
+  enabled: false
+
+gui:
+  # All internal values are persisted as integer minor units (cents by default).
+  # This limit is in minor units: 100000000000 = $1,000,000,000.00.
+  maximum-money-minor: 100000000000
+  minimum-duration-seconds: 30
+  maximum-duration-seconds: 300
 
 # define a simple boundary with 2 corners that players are required to be in when starting auctions or placing bids
 # this is useful if you have a specific auction house location/building where you want players to gather to interact in auctions
@@ -159,27 +167,3 @@ boundary:
     x: 5
     y: 255
     z: 5
-
-help:
-  # this allows you to set the order in which commands appear when the auction help page is shown
-  # if the player does not have permission for the command, it will not be shown
-  # removing these will stop the help from showing for that command.
-  order:
-    - cancel
-    - disable
-    - enable
-    - end
-    - ignore
-    - ignoreplayer
-    - impound
-    - info
-    - queue
-    - reload
-    - update
-    - remove
-    - save
-    - scoreboard
-    - spam
-    - start
-    - startsealed
-    - bid

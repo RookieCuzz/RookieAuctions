@@ -26,17 +26,21 @@ public class BidList {
 	}
 
 	public double getMinimumRequiredBid(AuctionPlayer auctionPlayer) {
+		return Money.toMajor(getMinimumRequiredBidMinor(auctionPlayer));
+	}
+
+	public long getMinimumRequiredBidMinor(AuctionPlayer auctionPlayer) {
 		// if not sealed, simply return the highest bid + increment or starting price if no bids
 		if (!auction.getAuctionData().isSealed()) {
-			return bids.isEmpty() ? auction.getAuctionData().getStartingPrice() :
-					highestBid.amount() + auction.getAuctionData().getIncrementPrice();
+			return bids.isEmpty() ? auction.getAuctionData().getStartingPriceMinor() :
+					Math.addExact(highestBid.amountMinor(), auction.getAuctionData().getIncrementPriceMinor());
 		}
 
 		// if sealed, return starting price or player's highest bid + increment if they already bid
 		Bid highestBidForPlayer = getHighestBidForPlayer(auctionPlayer);
 
-		return highestBidForPlayer == null ? auction.getAuctionData().getStartingPrice() :
-				highestBidForPlayer.amount() + auction.getAuctionData().getIncrementPrice();
+		return highestBidForPlayer == null ? auction.getAuctionData().getStartingPriceMinor() :
+				Math.addExact(highestBidForPlayer.amountMinor(), auction.getAuctionData().getIncrementPriceMinor());
 	}
 
 	public Bid getHighestBidForPlayer(AuctionPlayer auctionPlayer) {
@@ -51,7 +55,7 @@ public class BidList {
 				continue;
 			}
 
-			if (highestBidForPlayer.amount() < bid.amount()) {
+			if (highestBidForPlayer.amountMinor() < bid.amountMinor()) {
 				highestBidForPlayer = bid;
 			}
 		}
@@ -85,12 +89,12 @@ public class BidList {
 	public void placeBid(Bid bid) {
 		bids.add(bid);
 
-		if (highestBid == null || bid.amount() > highestBid.amount()) {
+		if (highestBid == null || bid.amountMinor() > highestBid.amountMinor()) {
 			highestBid = bid;
 		}
 
-		double autoBuyPrice = auction.getAuctionData().getAutoBuyPrice();
-		if (autoBuyPrice != 0 && bid.amount() >= autoBuyPrice) {
+		long autoBuyPrice = auction.getAuctionData().getAutoBuyPriceMinor();
+		if (autoBuyPrice != 0 && bid.amountMinor() >= autoBuyPrice) {
 			auction.end();
 		}
 
@@ -116,6 +120,17 @@ public class BidList {
 			}
 		}
 
+		return map;
+	}
+
+	public Map<AuctionPlayer, Long> getBidMapMinor() {
+		Map<AuctionPlayer, Long> map = new HashMap<>();
+		for (Bid bid : bids) {
+			long current = map.getOrDefault(bid.auctionPlayer(), 0L);
+			if (bid.amountMinor() > current) {
+				map.put(bid.auctionPlayer(), bid.amountMinor());
+			}
+		}
 		return map;
 	}
 }

@@ -63,4 +63,15 @@ public class ThreadedRegionTaskScheduler extends TaskSchedulerBase {
 		}, initialDelaySeconds, intervalSeconds, TimeUnit.SECONDS);
 		return scheduledTask::cancel;
 	}
+
+	@Override
+	protected CancellableTask scheduleGlobalRepeatingTask(@NotNull Plugin plugin, @NotNull Runnable runnable,
+	                                                      long initialDelaySeconds, long intervalSeconds) {
+		ScheduledTask scheduledTask = plugin.getServer().getGlobalRegionScheduler().runAtFixedRate(plugin, task -> {
+			if (!task.isCancelled()) {
+				runnable.run();
+			}
+		}, Math.max(1L, initialDelaySeconds * 20L), Math.max(1L, intervalSeconds * 20L));
+		return scheduledTask::cancel;
+	}
 }

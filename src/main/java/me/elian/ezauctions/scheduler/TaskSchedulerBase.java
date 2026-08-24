@@ -87,6 +87,15 @@ public abstract class TaskSchedulerBase implements TaskScheduler {
 		}
 	}
 
+	public CancellableTask runSyncRepeatingTask(@NotNull Plugin plugin, @NotNull Runnable runnable,
+	                                            long initialDelaySeconds, long intervalSeconds) {
+		if (shuttingDown) {
+			throw new IllegalStateException("Cannot schedule a repeating task while server shutting down!");
+		}
+		return scheduleGlobalRepeatingTask(plugin, wrapRunnable(runnable),
+				initialDelaySeconds, intervalSeconds);
+	}
+
 	protected abstract void schedulePlayerRegionTask(Plugin plugin, Runnable runnable, Player player);
 
 	protected abstract void scheduleGlobalSyncTask(@NotNull Plugin plugin, @NotNull Runnable runnable);
@@ -98,6 +107,9 @@ public abstract class TaskSchedulerBase implements TaskScheduler {
 
 	protected abstract CancellableTask scheduleAsyncRepeatingTask(@NotNull Plugin plugin, @NotNull Runnable runnable,
 	                                                              long initialDelaySeconds, long intervalSeconds);
+
+	protected abstract CancellableTask scheduleGlobalRepeatingTask(@NotNull Plugin plugin, @NotNull Runnable runnable,
+	                                                               long initialDelaySeconds, long intervalSeconds);
 
 
 	private Runnable wrapRunnable(Runnable runnable) {

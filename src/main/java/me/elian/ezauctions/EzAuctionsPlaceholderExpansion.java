@@ -32,7 +32,7 @@ public class EzAuctionsPlaceholderExpansion extends PlaceholderExpansion {
 
 	@Override
 	public @NotNull String getIdentifier() {
-		return plugin.getName();
+		return "ezauctions";
 	}
 
 	@Override

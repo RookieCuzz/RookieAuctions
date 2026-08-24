@@ -6,36 +6,43 @@ import com.google.inject.Guice;
 import com.google.inject.Injector;
 import com.google.inject.util.Providers;
 import me.elian.ezauctions.command.AuctionCommand;
-import me.elian.ezauctions.command.BidCommand;
 import me.elian.ezauctions.controller.AuctionController;
 import me.elian.ezauctions.controller.MessageController;
 import me.elian.ezauctions.controller.ScoreboardController;
 import me.elian.ezauctions.controller.UpdateController;
 import me.elian.ezauctions.data.Database;
+import me.elian.ezauctions.gui.AuctionGuiController;
 import me.elian.ezauctions.scheduler.BukkitTaskScheduler;
 import me.elian.ezauctions.scheduler.TaskScheduler;
 import me.elian.ezauctions.scheduler.ThreadedRegionTaskScheduler;
 import net.milkbowl.vault.economy.Economy;
 import net.milkbowl.vault.permission.Permission;
-import org.bstats.bukkit.Metrics;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.RegisteredServiceProvider;
 import org.bukkit.plugin.ServicesManager;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.util.stream.Stream;
+
 public class EzAuctions extends JavaPlugin {
 	private TaskScheduler scheduler;
 	private Database database;
-	private Metrics metrics;
 	private AuctionController auctionController;
 	private MessageController messageController;
 	private ScoreboardController scoreboardController;
 	private UpdateController updateController;
+	private AuctionGuiController auctionGuiController;
 	private Injector injector;
 
 	private static Class<? extends TaskScheduler> getSchedulerType() {
 		try {
-			Class.forName("io.papermc.paper.threadedregions.scheduler.EntityScheduler");
+			// EntityScheduler is part of the Paper API too; RegionizedServer only exists on Folia.
+			Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
 			return ThreadedRegionTaskScheduler.class;
 		} catch (ClassNotFoundException e) {
 			return BukkitTaskScheduler.class;
@@ -48,6 +55,8 @@ public class EzAuctions extends JavaPlugin {
 
 	@Override
 	public void onEnable() {
+		migrateLegacyDataFolder();
+
 		Economy economy = getEconomy();
 		if (economy == null) {
 			setEnabled(false);
@@ -64,23 +73,23 @@ public class EzAuctions extends JavaPlugin {
 		auctionController = injector.getInstance(AuctionController.class);
 		messageController = injector.getInstance(MessageController.class);
 		scoreboardController = injector.getInstance(ScoreboardController.class);
-
-		try {
-			metrics = new Metrics(this, 985);
-		} catch (IllegalStateException ignored) {
-			// this can be safely ignored. this exception is only generated when running tests
-		}
+		auctionGuiController = injector.getInstance(AuctionGuiController.class);
 
 		updateController = injector.getInstance(UpdateController.class);
 		updateController.checkForUpdates();
 
 		if (getServer().getPluginManager().isPluginEnabled("PlaceholderAPI")) {
+			injector.getInstance(RookieAuctionsPlaceholderExpansion.class).register();
 			injector.getInstance(EzAuctionsPlaceholderExpansion.class).register();
 		}
 	}
 
 	@Override
 	public void onDisable() {
+		if (auctionGuiController != null) {
+			auctionGuiController.shutdown();
+		}
+
 		// scheduler must be the first to shut down to ensure no async tasks are created
 		if (scheduler != null) {
 			scheduler.shutdown();
@@ -107,14 +116,11 @@ public class EzAuctions extends JavaPlugin {
 			database.shutdown();
 		}
 
-		if (metrics != null) {
-			metrics.shutdown();
-		}
 	}
 
 	private Economy getEconomy() {
 		if (getServer().getPluginManager().getPlugin("Vault") == null) {
-			getLogger().severe("Vault plugin not Installed! Disabling ezAuctions...");
+			getLogger().severe("Vault plugin not Installed! Disabling RookieAuctions...");
 			return null;
 		}
 
@@ -123,7 +129,7 @@ public class EzAuctions extends JavaPlugin {
 		if (rsp == null) {
 			getLogger().severe("Economy provider plugin not found! " +
 					"Make sure you have an economy provider plugin installed that supports Vault! " +
-					"Disabling ezAuctions...");
+					"Disabling RookieAuctions...");
 			return null;
 		}
 
@@ -163,10 +169,50 @@ public class EzAuctions extends JavaPlugin {
 
 	private void registerCommands(Injector injector) {
 		AuctionCommand auctionCommand = injector.getInstance(AuctionCommand.class);
-		BidCommand bidCommand = injector.getInstance(BidCommand.class);
 		PaperCommandManager manager = injector.getInstance(PaperCommandManager.class);
 
 		manager.registerCommand(auctionCommand);
-		manager.registerCommand(bidCommand);
+	}
+
+	private void migrateLegacyDataFolder() {
+		Path target = getDataFolder().toPath().toAbsolutePath().normalize();
+		Path legacy = target.resolveSibling("ezAuctions");
+		try {
+			if (!Files.isDirectory(legacy) || (Files.exists(target) && !isDirectoryEmpty(target))) {
+				return;
+			}
+
+			try (Stream<Path> paths = Files.walk(legacy)) {
+				for (Path source : (Iterable<Path>) paths::iterator) {
+					Path destination = target.resolve(legacy.relativize(source));
+					if (Files.isDirectory(source)) {
+						Files.createDirectories(destination);
+					} else {
+						Files.copy(source, destination, StandardCopyOption.COPY_ATTRIBUTES);
+					}
+				}
+			}
+
+			Path config = target.resolve("config.yml");
+			if (Files.isRegularFile(config)) {
+				String contents = Files.readString(config, StandardCharsets.UTF_8);
+				String migrated = contents
+						.replace("jdbc:sqlite:plugins/ezAuctions/sqlite.db", "jdbc:sqlite:sqlite.db")
+						.replace("jdbc:sqlite:plugins/RookieAuctions/sqlite.db", "jdbc:sqlite:sqlite.db");
+				if (!contents.equals(migrated)) {
+					Files.writeString(config, migrated, StandardCharsets.UTF_8);
+				}
+			}
+			getLogger().info("Migrated legacy ezAuctions data to RookieAuctions.");
+		} catch (IOException exception) {
+			getLogger().warning("Could not migrate the legacy ezAuctions data folder: "
+					+ exception.getMessage());
+		}
+	}
+
+	private boolean isDirectoryEmpty(Path path) throws IOException {
+		try (Stream<Path> entries = Files.list(path)) {
+			return entries.findAny().isEmpty();
+		}
 	}
 }

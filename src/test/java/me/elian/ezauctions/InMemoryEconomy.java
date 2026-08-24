@@ -74,7 +74,7 @@ public class InMemoryEconomy implements Economy {
 
 	@Override
 	public double getBalance(OfflinePlayer offlinePlayer) {
-		return balances.get(offlinePlayer.getUniqueId());
+		return balances.getOrDefault(offlinePlayer.getUniqueId(), 0D);
 	}
 
 	@Override
@@ -115,8 +115,12 @@ public class InMemoryEconomy implements Economy {
 	@Override
 	public EconomyResponse withdrawPlayer(OfflinePlayer offlinePlayer, double v) {
 		double balance = balances.getOrDefault(offlinePlayer.getUniqueId(), 0D);
+		if (v < 0 || balance < v) {
+			return new EconomyResponse(v, balance, EconomyResponse.ResponseType.FAILURE,
+					"Insufficient funds");
+		}
 		balances.put(offlinePlayer.getUniqueId(), balance - v);
-		return null;
+		return new EconomyResponse(v, balance - v, EconomyResponse.ResponseType.SUCCESS, null);
 	}
 
 	@Override
@@ -137,8 +141,12 @@ public class InMemoryEconomy implements Economy {
 	@Override
 	public EconomyResponse depositPlayer(OfflinePlayer offlinePlayer, double v) {
 		double balance = balances.getOrDefault(offlinePlayer.getUniqueId(), 0D);
+		if (v < 0) {
+			return new EconomyResponse(v, balance, EconomyResponse.ResponseType.FAILURE,
+					"Negative deposit");
+		}
 		balances.put(offlinePlayer.getUniqueId(), balance + v);
-		return null;
+		return new EconomyResponse(v, balance + v, EconomyResponse.ResponseType.SUCCESS, null);
 	}
 
 	@Override
@@ -229,5 +237,9 @@ public class InMemoryEconomy implements Economy {
 	@Override
 	public boolean createPlayerAccount(OfflinePlayer offlinePlayer, String s) {
 		return false;
+	}
+
+	public void setBalance(OfflinePlayer player, double balance) {
+		balances.put(player.getUniqueId(), balance);
 	}
 }

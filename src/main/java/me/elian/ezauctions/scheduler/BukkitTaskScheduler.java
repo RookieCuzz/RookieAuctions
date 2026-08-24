@@ -43,4 +43,12 @@ public class BukkitTaskScheduler extends TaskSchedulerBase {
 				initialDelaySeconds * 20L, intervalSeconds * 20L);
 		return task::cancel;
 	}
+
+	@Override
+	protected CancellableTask scheduleGlobalRepeatingTask(@NotNull Plugin plugin, @NotNull Runnable runnable,
+	                                                      long initialDelaySeconds, long intervalSeconds) {
+		BukkitTask task = plugin.getServer().getScheduler().runTaskTimer(plugin, runnable,
+				initialDelaySeconds * 20L, intervalSeconds * 20L);
+		return task::cancel;
+	}
 }

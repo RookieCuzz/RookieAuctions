@@ -8,6 +8,7 @@ import me.elian.ezauctions.data.Database;
 import me.elian.ezauctions.helper.ItemHelper;
 import me.elian.ezauctions.model.AuctionPlayer;
 import me.elian.ezauctions.model.SavedItem;
+import me.elian.ezauctions.model.RewardRecord;
 import me.elian.ezauctions.scheduler.TaskScheduler;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import org.bukkit.entity.Player;
@@ -58,12 +59,21 @@ public class AuctionPlayerController implements Listener {
 	}
 
 	public @NotNull CompletableFuture<AuctionPlayer> getPlayer(@NotNull UUID id) {
-		for (AuctionPlayer ap : onlinePlayers) {
-			if (ap.getUniqueId().equals(id))
-				return CompletableFuture.completedFuture(ap);
+		AuctionPlayer online = getOnlinePlayer(id);
+		if (online != null) {
+			return CompletableFuture.completedFuture(online);
 		}
 
 		return database.getAuctionPlayer(id);
+	}
+
+	public AuctionPlayer getOnlinePlayer(@NotNull UUID id) {
+		for (AuctionPlayer auctionPlayer : onlinePlayers) {
+			if (auctionPlayer.getUniqueId().equals(id)) {
+				return auctionPlayer;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -92,7 +102,7 @@ public class AuctionPlayerController implements Listener {
 			database.getAuctionPlayer(id).thenAccept(ap -> {
 				onlinePlayers.add(ap);
 				scoreboard.addPlayer(p);
-				returnSavedItems(ap);
+				migrateLegacySavedItems(ap);
 			});
 		});
 	}
@@ -109,68 +119,19 @@ public class AuctionPlayerController implements Listener {
 		}
 	}
 
-	// run reward offline when player changes worlds as well
-	@EventHandler
-	public void onPlayerChangedWorld(PlayerChangedWorldEvent e) {
-		scheduler.runAsyncTask(() -> {
-			Player player = e.getPlayer();
-			getPlayerFromDatabase(player.getUniqueId()).thenAccept(this::returnSavedItems);
-		});
-	}
-
-	private void returnSavedItems(AuctionPlayer ap) {
-		if (ap.getSavedItems() == null || ap.getSavedItems().isEmpty())
+	private void migrateLegacySavedItems(@NotNull AuctionPlayer auctionPlayer) {
+		if (auctionPlayer.getSavedItems() == null || auctionPlayer.getSavedItems().isEmpty()) {
 			return;
-
-		Player p = ap.getOnlinePlayer();
-
-		if (p == null)
-			return;
-
-		scheduler.runPlayerRegionTask(() -> {
-			List<SavedItem> returnedItems = new ArrayList<>();
-
-			boolean overflow = false;
-
-			String playerWorld = p.getWorld().getName();
-			if (config.getConfig().getStringList("auctions.blocked-worlds")
-					.stream().anyMatch(blockedWorld -> blockedWorld.equals(playerWorld))) {
-				messages.sendMessage(p, "reward.relogged_blocked_world");
-				return;
+		}
+		List<SavedItem> snapshot = new ArrayList<>(auctionPlayer.getSavedItems());
+		for (SavedItem legacy : snapshot) {
+			try {
+				RewardRecord reward = RewardRecord.legacyItem(auctionPlayer.getUniqueId(), legacy.getId(),
+						legacy.getItemStack(), legacy.getAmount(), legacy.getWorld());
+				database.createReward(reward).thenRun(() -> auctionPlayer.getSavedItems().remove(legacy));
+			} catch (IOException exception) {
+				logger.severe("Could not migrate legacy saved item " + legacy.getId(), exception);
 			}
-
-			for (SavedItem savedItem : ap.getSavedItems()) {
-				if (config.getConfig().getBoolean("auctions.per-world-auctions")
-						&& !playerWorld.equals(savedItem.getWorld())) {
-					messages.sendMessage(p, "reward.relogged_wrong_world",
-							Placeholder.unparsed("itemworld", savedItem.getWorld()));
-					continue;
-				}
-
-				try {
-					ItemStack item = savedItem.getItemStack();
-					boolean itemOverflowed = ItemHelper.addItemToPlayerInventory(p, item, savedItem.getAmount());
-					if (itemOverflowed) {
-						overflow = true;
-					}
-				} catch (IOException e) {
-					logger.severe("Error occured while deserializing item stack! " +
-							"Player item not returned! " + savedItem.getSerializedItemJson(), e);
-				}
-
-				returnedItems.add(savedItem);
-			}
-
-			if (returnedItems.size() == 0)
-				return;
-
-			scheduler.runAsyncTask(() -> ap.getSavedItems().removeAll(returnedItems));
-
-			messages.sendMessage(p, "reward.relogged");
-
-			if (overflow) {
-				messages.sendMessage(p, "reward.full_inventory");
-			}
-		}, p);
+		}
 	}
 }

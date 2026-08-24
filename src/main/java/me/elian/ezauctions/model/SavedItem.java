@@ -52,6 +52,10 @@ public class SavedItem {
 		return amount;
 	}
 
+	public int getId() {
+		return id;
+	}
+
 	@NotNull
 	public String getWorld() {
 		return world;

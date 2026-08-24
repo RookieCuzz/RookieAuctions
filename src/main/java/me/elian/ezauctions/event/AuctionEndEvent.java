@@ -13,7 +13,7 @@ public class AuctionEndEvent extends Event {
 	private boolean cancelled;
 
 	public AuctionEndEvent(Auction auction) {
-		super(true);
+		super(false);
 		this.auction = auction;
 	}
 

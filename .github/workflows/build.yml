@@ -37,5 +37,5 @@ jobs:
       - name: Upload jar to workflow run
         uses: actions/upload-artifact@v4
         with:
-          name: ezAuctions.jar
-          path: target/ezAuctions.jar
+          name: RookieAuctions.jar
+          path: target/RookieAuctions.jar

@@ -33,7 +33,7 @@ import java.util.concurrent.ExecutionException;
 
 @Singleton
 public class UpdateController implements Listener {
-	private static final String GITHUB_REPO = "elian1203/ezAuctions";
+	private static final String GITHUB_REPO = "RookieCuzz/RookieAuctions";
 	// these two fields need to be static if the plugin is reloaded using /reload or PlugMan at runtime
 	private static Thread shutdownHook;
 	private static Path downloadedFilePath;
@@ -191,7 +191,7 @@ public class UpdateController implements Listener {
 		for (JsonElement assetElement : releaseAssets) {
 			JsonObject assetObject = assetElement.getAsJsonObject();
 			String name = assetObject.get("name").getAsString().toLowerCase();
-			if (name.contains("ezauctions") && name.endsWith(".jar")) {
+			if (name.contains("rookieauctions") && name.endsWith(".jar")) {
 				jarAsset = assetObject;
 				break;
 			}
@@ -204,7 +204,7 @@ public class UpdateController implements Listener {
 
 		String downloadUrl = jarAsset.get("url").getAsString();
 		Path downloadPath = Path.of(plugin.getDataFolder().getAbsolutePath(),
-				"ezAuctions_" + latestSupportedPluginVersion + ".jar");
+				"RookieAuctions_" + latestSupportedPluginVersion + ".jar");
 
 		request = HttpRequest.newBuilder(URI.create(downloadUrl))
 				.header("Accept", "application/octet-stream")

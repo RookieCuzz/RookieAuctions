@@ -23,16 +23,19 @@ import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.inventory.meta.SkullMeta;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.UUID;
+
 public final class AuctionData {
+	private final UUID id;
 	private final AuctionPlayer auctioneer;
 	private final ItemStack item;
 	private final String amountString;
 	private final boolean isSealed;
 	private final String world;
-	private double startingPrice;
+	private long startingPriceMinor;
 	private int startingAuctionTime;
-	private double incrementPrice;
-	private double autoBuyPrice;
+	private long incrementPriceMinor;
+	private long autoBuyPriceMinor;
 	private int amount;
 	private String skullOwner;
 	private int repairPrice;
@@ -43,15 +46,37 @@ public final class AuctionData {
 	public AuctionData(AuctionPlayer auctioneer, ItemStack item, String amountString, int startingAuctionTime,
 	                   double startingPrice, double incrementPrice, double autoBuyPrice, boolean isSealed,
 	                   String world) {
+		this(UUID.randomUUID(), auctioneer, item, amountString, startingAuctionTime,
+				Money.fromMajor(startingPrice), Money.fromMajor(incrementPrice), Money.fromMajor(autoBuyPrice),
+				isSealed, world);
+	}
+
+	public AuctionData(@NotNull UUID id, @NotNull AuctionPlayer auctioneer, @NotNull ItemStack item, int amount,
+	                   int startingAuctionTime, long startingPriceMinor, long incrementPriceMinor,
+	                   long autoBuyPriceMinor, boolean isSealed, @NotNull String world) {
+		this(id, auctioneer, item, Integer.toString(amount), startingAuctionTime, startingPriceMinor,
+				incrementPriceMinor, autoBuyPriceMinor, isSealed, world);
+		this.amount = amount;
+	}
+
+	private AuctionData(@NotNull UUID id, @NotNull AuctionPlayer auctioneer, @NotNull ItemStack item,
+	                    String amountString, int startingAuctionTime, long startingPriceMinor,
+	                    long incrementPriceMinor, long autoBuyPriceMinor, boolean isSealed,
+	                    @NotNull String world) {
+		this.id = id;
 		this.auctioneer = auctioneer;
 		this.item = item;
 		this.amountString = amountString == null ? "" : amountString.toLowerCase();
 		this.startingAuctionTime = startingAuctionTime;
-		this.startingPrice = startingPrice;
-		this.incrementPrice = incrementPrice;
-		this.autoBuyPrice = autoBuyPrice;
+		this.startingPriceMinor = startingPriceMinor;
+		this.incrementPriceMinor = incrementPriceMinor;
+		this.autoBuyPriceMinor = autoBuyPriceMinor;
 		this.isSealed = isSealed;
 		this.world = world;
+	}
+
+	public UUID getId() {
+		return id;
 	}
 
 	public AuctionPlayer getAuctioneer() {
@@ -71,15 +96,27 @@ public final class AuctionData {
 	}
 
 	public double getStartingPrice() {
-		return startingPrice;
+		return Money.toMajor(startingPriceMinor);
+	}
+
+	public long getStartingPriceMinor() {
+		return startingPriceMinor;
 	}
 
 	public double getIncrementPrice() {
-		return incrementPrice;
+		return Money.toMajor(incrementPriceMinor);
+	}
+
+	public long getIncrementPriceMinor() {
+		return incrementPriceMinor;
 	}
 
 	public double getAutoBuyPrice() {
-		return autoBuyPrice;
+		return Money.toMajor(autoBuyPriceMinor);
+	}
+
+	public long getAutoBuyPriceMinor() {
+		return autoBuyPriceMinor;
 	}
 
 	public boolean isSealed() {
@@ -143,8 +180,8 @@ public final class AuctionData {
 			startingAuctionTime = config.getInt("auctions.default.auction-time");
 		}
 
-		if (incrementPrice == 0) {
-			incrementPrice = config.getInt("auctions.default.increment");
+		if (incrementPriceMinor == 0) {
+			incrementPriceMinor = Money.fromMajor(config.getDouble("auctions.default.increment"));
 		}
 	}
 
@@ -165,32 +202,36 @@ public final class AuctionData {
 	}
 
 	private void truncateDecimals(FileConfiguration config) {
-		startingPrice = truncateToDecimalPlace(startingPrice, config.getInt("auctions.decimal.starting-price"));
-		incrementPrice = truncateToDecimalPlace(incrementPrice, config.getInt("auctions.decimal.increment"));
-		autoBuyPrice = truncateToDecimalPlace(autoBuyPrice, config.getInt("auctions.decimal.autobuy"));
+		startingPriceMinor = truncateToDecimalPlace(startingPriceMinor,
+				config.getInt("auctions.decimal.starting-price"));
+		incrementPriceMinor = truncateToDecimalPlace(incrementPriceMinor,
+				config.getInt("auctions.decimal.increment"));
+		autoBuyPriceMinor = truncateToDecimalPlace(autoBuyPriceMinor,
+				config.getInt("auctions.decimal.autobuy"));
 	}
 
-	private double truncateToDecimalPlace(double number, int decimalPlaces) {
-		double pow = Math.pow(10, decimalPlaces);
-		return Math.round(number * pow) / pow;
+	private long truncateToDecimalPlace(long minor, int decimalPlaces) {
+		int safePlaces = Math.max(0, Math.min(Money.SCALE, decimalPlaces));
+		long factor = (long) Math.pow(10, Money.SCALE - safePlaces);
+		return Math.round((double) minor / factor) * factor;
 	}
 
 	private boolean validateStartingPrice(FileConfiguration config, MessageController messages, Player player) {
-		double min = config.getDouble("auctions.minimum.starting-price");
-		double max = config.getDouble("auctions.maximum.starting-price");
-		if (startingPrice <= 0 || startingPrice < min) {
+		long min = Money.fromMajor(config.getDouble("auctions.minimum.starting-price"));
+		long max = Money.fromMajor(config.getDouble("auctions.maximum.starting-price"));
+		if (startingPriceMinor <= 0 || startingPriceMinor < min) {
 			messages.sendMessage(player, "command.auction.start.invalid_start_price.min",
-					Formatter.number("min", min),
-					Formatter.number("max", max),
-					Formatter.number("entered", startingPrice));
+					Formatter.number("min", Money.toMajor(min)),
+					Formatter.number("max", Money.toMajor(max)),
+					Formatter.number("entered", getStartingPrice()));
 			return false;
 		}
 
-		if (startingPrice > max && max != 0) {
+		if (startingPriceMinor > max && max != 0) {
 			messages.sendMessage(player, "command.auction.start.invalid_start_price.max",
-					Formatter.number("min", min),
-					Formatter.number("max", max),
-					Formatter.number("entered", startingPrice));
+					Formatter.number("min", Money.toMajor(min)),
+					Formatter.number("max", Money.toMajor(max)),
+					Formatter.number("entered", getStartingPrice()));
 			return false;
 		}
 
@@ -198,19 +239,22 @@ public final class AuctionData {
 	}
 
 	private boolean validateIncrement(FileConfiguration config, MessageController messages, Player player) {
-		double min = config.getDouble("auctions.minimum.increment");
-		double max = config.getDouble("auctions.maximum.increment");
+		double minConfigured = config.getDouble("auctions.minimum.increment");
+		double maxConfigured = config.getDouble("auctions.maximum.increment");
 
-		if (min == -1 && max == -1) {
-			incrementPrice = config.getDouble("auctions.default.increment");
+		if (minConfigured == -1 && maxConfigured == -1) {
+			incrementPriceMinor = Money.fromMajor(config.getDouble("auctions.default.increment"));
 			return true;
 		}
 
-		if (incrementPrice <= 0 || incrementPrice < min || (incrementPrice > max && max != 0)) {
+		long min = Money.fromMajor(Math.max(0, minConfigured));
+		long max = Money.fromMajor(Math.max(0, maxConfigured));
+		if (incrementPriceMinor <= 0 || incrementPriceMinor < min
+				|| (incrementPriceMinor > max && max != 0)) {
 			messages.sendMessage(player, "command.auction.start.invalid-inc",
-					Formatter.number("min", min),
-					Formatter.number("max", max),
-					Formatter.number("entered", incrementPrice));
+					Formatter.number("min", Money.toMajor(min)),
+					Formatter.number("max", Money.toMajor(max)),
+					Formatter.number("entered", getIncrementPrice()));
 			return false;
 		}
 
@@ -218,23 +262,25 @@ public final class AuctionData {
 	}
 
 	private boolean validateAutoBuy(FileConfiguration config, MessageController messages, Player player) {
-		double min = config.getDouble("auctions.minimum.autobuy");
-		double max = config.getDouble("auctions.maximum.autobuy");
+		double minConfigured = config.getDouble("auctions.minimum.autobuy");
+		double maxConfigured = config.getDouble("auctions.maximum.autobuy");
 
-		if (min == -1 && max == -1) {
-			autoBuyPrice = config.getDouble("auctions.default.autobuy");
+		if (minConfigured == -1 && maxConfigured == -1) {
+			autoBuyPriceMinor = Money.fromMajor(config.getDouble("auctions.default.autobuy"));
 			return true;
 		}
 
-		if (startingPrice > min && autoBuyPrice != 0) {
-			min = startingPrice;
+		if (autoBuyPriceMinor == 0) {
+			return true;
 		}
 
-		if (autoBuyPrice < 0 || autoBuyPrice < min || (autoBuyPrice > max && max != 0)) {
+		long min = Math.max(startingPriceMinor, Money.fromMajor(Math.max(0, minConfigured)));
+		long max = Money.fromMajor(Math.max(0, maxConfigured));
+		if (autoBuyPriceMinor < min || (autoBuyPriceMinor > max && max != 0)) {
 			messages.sendMessage(player, "command.auction.start.invalid-buyout",
-					Formatter.number("min", min),
-					Formatter.number("max", max),
-					Formatter.number("entered", autoBuyPrice));
+					Formatter.number("min", Money.toMajor(min)),
+					Formatter.number("max", Money.toMajor(max)),
+					Formatter.number("entered", getAutoBuyPrice()));
 			return false;
 		}
 

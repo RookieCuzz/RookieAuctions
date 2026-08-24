@@ -16,7 +16,7 @@ public class AuctionBidEvent extends Event implements Cancellable {
 	private boolean cancelled;
 
 	public AuctionBidEvent(Auction auction, Bid bid) {
-		super(true);
+		super(false);
 		this.auction = auction;
 		this.bid = bid;
 	}

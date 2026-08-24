@@ -1,18 +1,18 @@
-# ezAuctions
-[![build status](https://github.com/elian1203/ezAuctions/actions/workflows/build.yml/badge.svg)](https://github.com/elian1203/ezAuctions/actions/workflows/build.yml)
-[![CodeFactor](https://www.codefactor.io/repository/github/elian1203/ezauctions/badge/main)](https://www.codefactor.io/repository/github/elian1203/ezauctions/overview/main)
-[![](https://jitpack.io/v/elian1203/ezauctions.svg)](https://jitpack.io/#elian1203/ezauctions)  
-Spigot Page: [https://www.spigotmc.org/resources/ezauctions.42574/](https://www.spigotmc.org/resources/ezauctions.42574/)
+# RookieAuctions
 
-A simple, text-based auction plugin <br> <br>
-Based off of floAuction & Auctions <br>
+RookieAuctions is a safe, 54-slot inventory-GUI auction plugin based on
+[ezAuctions 2.4.4](https://github.com/elian1203/ezAuctions). It supports public and sealed bidding,
+auction queues, bid confirmation, auction history, reward claims, SQLite/MariaDB, Paper and Folia.
+
+The Java package, database schema and legacy `ezauctions.*` permissions remain compatible with the
+upstream plugin so existing integrations and auction data can be migrated safely.
 
 ### Plugin Dependencies
 This plugin requires your server to have `Vault` installed. If you do not have it installed, it can be found 
 [here](https://www.spigotmc.org/resources/vault.34315/).
 
 ## Developers
-Elian, Silverwolfg11
+RookieCuzz (RookieAuctions fork), Elian and Silverwolfg11 (upstream)
 
 ## Building
 Clone the project from GitHub, then run `mvn clean package` in your terminal at the project directory to build the project.
@@ -30,9 +30,10 @@ Repository:
 Dependency:
 ```
 <dependency>
-    <groupId>com.github.elian1203</groupId>
-    <artifactId>ezAuctions</artifactId>
-    <version>2.0.0</version>
+    <groupId>com.github.RookieCuzz</groupId>
+    <artifactId>RookieAuctions</artifactId>
+    <version>2.4.4-gui</version>
 </dependency>
 ```
-You can view API usage [here](https://github.com/elian1203/ezAuctions/wiki/api).
+The API remains under the `me.elian.ezauctions` package for binary compatibility. Upstream API usage
+is documented [here](https://github.com/elian1203/ezAuctions/wiki/api).

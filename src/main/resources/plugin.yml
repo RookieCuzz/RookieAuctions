@@ -1,13 +1,115 @@
-main: me.elian.ezauctions.EzAuctions
-name: ezAuctions
+main: me.elian.ezauctions.RookieAuctions
+name: RookieAuctions
 version: ${project.version}
 api-version: 1.20
-authors: [Elian, Silverwolfg11]
-description: A simple, text-based auction plugin
+authors: [RookieCuzz, Elian, Silverwolfg11]
+description: A safe, inventory-GUI auction plugin
 softdepend: [Vault, PlaceholderAPI, ViaVersion]
+provides: [ezAuctions]
 folia-supported: true
 
 permissions:
+  rookieauctions.*:
+    default: op
+    description: All RookieAuctions permissions (legacy aliases remain supported)
+    children:
+      ezauctions.*: true
+  rookieauctions.admin:
+    default: false
+    children:
+      ezauctions.admin: true
+  rookieauctions.player:
+    default: true
+    children:
+      ezauctions.player: true
+  rookieauctions.auction:
+    default: true
+    children:
+      ezauctions.auction: true
+  rookieauctions.auction.start:
+    default: true
+    children:
+      ezauctions.auction.start: true
+  rookieauctions.auction.start.sealed:
+    default: true
+    children:
+      ezauctions.auction.start.sealed: true
+  rookieauctions.auction.end:
+    default: false
+    children:
+      ezauctions.auction.end: true
+  rookieauctions.auction.end.others:
+    default: false
+    children:
+      ezauctions.auction.end.others: true
+  rookieauctions.auction.cancel:
+    default: false
+    children:
+      ezauctions.auction.cancel: true
+  rookieauctions.auction.cancel.others:
+    default: false
+    children:
+      ezauctions.auction.cancel.others: true
+  rookieauctions.auction.info:
+    default: false
+    children:
+      ezauctions.auction.info: true
+  rookieauctions.auction.remove:
+    default: false
+    children:
+      ezauctions.auction.remove: true
+  rookieauctions.auction.spam:
+    default: false
+    children:
+      ezauctions.auction.spam: true
+  rookieauctions.auction.ignore:
+    default: false
+    children:
+      ezauctions.auction.ignore: true
+  rookieauctions.auction.ignore.player:
+    default: false
+    children:
+      ezauctions.auction.ignore.player: true
+  rookieauctions.auction.scoreboard:
+    default: false
+    children:
+      ezauctions.auction.scoreboard: true
+  rookieauctions.auction.queue:
+    default: false
+    children:
+      ezauctions.auction.queue: true
+  rookieauctions.auction.impound:
+    default: false
+    children:
+      ezauctions.auction.impound: true
+  rookieauctions.auction.enable:
+    default: false
+    children:
+      ezauctions.auction.enable: true
+  rookieauctions.auction.disable:
+    default: false
+    children:
+      ezauctions.auction.disable: true
+  rookieauctions.auction.reload:
+    default: false
+    children:
+      ezauctions.auction.reload: true
+  rookieauctions.auction.update:
+    default: false
+    children:
+      ezauctions.auction.update: true
+  rookieauctions.updatemessage:
+    default: false
+    children:
+      ezauctions.updatemessage: true
+  rookieauctions.taxexempt:
+    default: false
+    children:
+      ezauctions.taxexempt: true
+  rookieauctions.cooldownexempt:
+    default: false
+    children:
+      ezauctions.cooldownexempt: true
   ezauctions.*:
     default: op
     description: All commands
@@ -39,13 +141,12 @@ permissions:
       ezauctions.auction.ignore.player: true
       ezauctions.auction.scoreboard: true
       ezauctions.auction.queue: true
-      ezauctions.bid: true
   ezauctions.auction:
-    default: false
+    default: true
   ezauctions.auction.start:
-    default: false
+    default: true
   ezauctions.auction.start.sealed:
-    default: false
+    default: true
   ezauctions.auction.end:
     default: false
   ezauctions.auction.end.others:
@@ -77,8 +178,6 @@ permissions:
   ezauctions.auction.reload:
     default: false
   ezauctions.auction.update:
-    default: false
-  ezauctions.bid:
     default: false
   ezauctions.updatemessage:
     default: false

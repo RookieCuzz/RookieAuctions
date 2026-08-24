@@ -23,7 +23,10 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
@@ -91,6 +94,109 @@ public class ItemHelper {
 		return true;
 	}
 
+	/**
+	 * Adds an item only when the complete amount fits. Nothing is dropped and the inventory is restored if the
+	 * server unexpectedly reports leftovers.
+	 */
+	public static boolean addItemToPlayerInventoryNoDrop(@NotNull Player player, @NotNull ItemStack itemStack,
+	                                                     int amount) {
+		if (amount <= 0 || !canFitInStorage(player, itemStack, amount)) {
+			return false;
+		}
+
+		PlayerInventory inventory = player.getInventory();
+		ItemStack[] before = cloneContents(inventory.getStorageContents());
+		HashMap<Integer, ItemStack> leftovers = inventory.addItem(splitStacks(itemStack, amount));
+		if (leftovers.isEmpty()) {
+			return true;
+		}
+
+		inventory.setStorageContents(before);
+		return false;
+	}
+
+	public static boolean canFitInStorage(@NotNull Player player, @NotNull ItemStack itemStack, int amount) {
+		if (amount <= 0) {
+			return false;
+		}
+
+		int capacity = 0;
+		int maxStack = itemStack.getMaxStackSize();
+		for (ItemStack existing : player.getInventory().getStorageContents()) {
+			if (existing == null || existing.getType() == Material.AIR) {
+				capacity += maxStack;
+			} else if (existing.isSimilar(itemStack)) {
+				capacity += Math.max(0, maxStack - existing.getAmount());
+			}
+			if (capacity >= amount) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Removes the requested amount atomically from storage slots. It first computes a complete removal plan and
+	 * only mutates the inventory after the full amount has been located.
+	 */
+	public static boolean removeItemFromPlayerInventoryExact(@NotNull Player player, @NotNull ItemStack itemStack,
+	                                                          int amount) {
+		if (amount <= 0) {
+			return false;
+		}
+
+		PlayerInventory inventory = player.getInventory();
+		ItemStack[] storage = inventory.getStorageContents();
+		int remaining = amount;
+		Map<Integer, Integer> plan = new HashMap<>();
+
+		for (int slot = 0; slot < storage.length && remaining > 0; slot++) {
+			ItemStack existing = storage[slot];
+			if (existing == null || !existing.isSimilar(itemStack)) {
+				continue;
+			}
+			int take = Math.min(existing.getAmount(), remaining);
+			plan.put(slot, take);
+			remaining -= take;
+		}
+
+		if (remaining != 0) {
+			return false;
+		}
+
+		for (Map.Entry<Integer, Integer> entry : plan.entrySet()) {
+			int slot = entry.getKey();
+			ItemStack existing = inventory.getItem(slot);
+			if (existing == null || !existing.isSimilar(itemStack) || existing.getAmount() < entry.getValue()) {
+				return false;
+			}
+		}
+
+		for (Map.Entry<Integer, Integer> entry : plan.entrySet()) {
+			int slot = entry.getKey();
+			ItemStack existing = inventory.getItem(slot);
+			int remainingInStack = existing.getAmount() - entry.getValue();
+			if (remainingInStack == 0) {
+				inventory.setItem(slot, null);
+			} else {
+				existing.setAmount(remainingInStack);
+				inventory.setItem(slot, existing);
+			}
+		}
+		return true;
+	}
+
+	public static @NotNull String fingerprint(@NotNull ItemStack itemStack) {
+		ItemStack normalized = itemStack.clone();
+		normalized.setAmount(1);
+		try {
+			byte[] digest = MessageDigest.getInstance("SHA-256").digest(serialize(normalized));
+			return Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
+		} catch (NoSuchAlgorithmException exception) {
+			throw new IllegalStateException("SHA-256 is unavailable", exception);
+		}
+	}
+
 	public static void removeItemFromPlayerInventory(@NotNull Player player, @NotNull ItemStack itemStack,
 	                                                 int amount) {
 		int remainingAmount = amount;
@@ -145,6 +251,25 @@ public class ItemHelper {
 		}
 
 		return amountInInventory;
+	}
+
+	private static @NotNull ItemStack[] splitStacks(@NotNull ItemStack itemStack, int amount) {
+		ArrayList<ItemStack> items = new ArrayList<>();
+		int remaining = amount;
+		while (remaining > 0) {
+			ItemStack clone = itemStack.clone();
+			int stackAmount = Math.min(itemStack.getMaxStackSize(), remaining);
+			clone.setAmount(stackAmount);
+			items.add(clone);
+			remaining -= stackAmount;
+		}
+		return items.toArray(ItemStack[]::new);
+	}
+
+	private static @NotNull ItemStack[] cloneContents(@NotNull ItemStack[] contents) {
+		return Arrays.stream(contents)
+				.map(item -> item == null ? null : item.clone())
+				.toArray(ItemStack[]::new);
 	}
 
 	private static boolean hasAsHoverEventMethod() {

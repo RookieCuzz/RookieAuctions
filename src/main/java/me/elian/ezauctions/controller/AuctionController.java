@@ -4,10 +4,15 @@ import com.google.inject.Inject;
 import com.google.inject.Provider;
 import com.google.inject.Singleton;
 import me.elian.ezauctions.Logger;
+import me.elian.ezauctions.data.Database;
 import me.elian.ezauctions.helper.ItemHelper;
 import me.elian.ezauctions.model.Auction;
+import me.elian.ezauctions.model.AuctionBidRecord;
 import me.elian.ezauctions.model.AuctionData;
 import me.elian.ezauctions.model.AuctionPlayer;
+import me.elian.ezauctions.model.AuctionRecord;
+import me.elian.ezauctions.model.AuctionRecordStatus;
+import me.elian.ezauctions.model.RewardKind;
 import me.elian.ezauctions.scheduler.TaskScheduler;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -26,8 +31,10 @@ public class AuctionController implements Listener {
 	private final TaskScheduler scheduler;
 	private final ConfigController config;
 	private final MessageController messages;
+	private final Database database;
+	private final RewardController rewards;
 	private final Provider<Auction> auctionProvider;
-	private final Queue<AuctionData> auctionQueue = new LinkedList<>();
+	private final Deque<AuctionData> auctionQueue = new ArrayDeque<>();
 	private final Map<UUID, Long> queueCooldown = new HashMap<>();
 
 	private boolean auctionsEnabled = true;
@@ -37,21 +44,25 @@ public class AuctionController implements Listener {
 	@Inject
 	public AuctionController(Plugin plugin, Logger logger, AuctionPlayerController playerController,
 	                         TaskScheduler scheduler, ConfigController config,
-	                         MessageController messages, Provider<Auction> auctionProvider) {
+	                         MessageController messages, Provider<Auction> auctionProvider,
+	                         Database database, RewardController rewards) {
 		this.logger = logger;
 		this.playerController = playerController;
 		this.scheduler = scheduler;
 		this.config = config;
 		this.messages = messages;
 		this.auctionProvider = auctionProvider;
+		this.database = database;
+		this.rewards = rewards;
 		plugin.getServer().getPluginManager().registerEvents(this, plugin);
+		recoverPersistedAuctions();
 	}
 
-	public boolean isAuctionsEnabled() {
+	public synchronized boolean isAuctionsEnabled() {
 		return auctionsEnabled;
 	}
 
-	public void setAuctionsEnabled(boolean auctionsEnabled) {
+	public synchronized void setAuctionsEnabled(boolean auctionsEnabled) {
 		this.auctionsEnabled = auctionsEnabled;
 	}
 
@@ -61,23 +72,23 @@ public class AuctionController implements Listener {
 		}
 	}
 
-	public @NotNull Collection<AuctionData> getAuctionQueue() {
-		return Collections.unmodifiableCollection(auctionQueue);
+	public synchronized @NotNull List<AuctionData> getAuctionQueue() {
+		return List.copyOf(auctionQueue);
 	}
 
-	public boolean hasActiveAuction() {
+	public synchronized boolean hasActiveAuction() {
 		return activeAuction != null;
 	}
 
-	public @Nullable Auction getActiveAuction() {
+	public synchronized @Nullable Auction getActiveAuction() {
 		return activeAuction;
 	}
 
-	public long getCooldownTime(@NotNull UUID uniqueId) {
+	public synchronized long getCooldownTime(@NotNull UUID uniqueId) {
 		return queueCooldown.getOrDefault(uniqueId, 0L);
 	}
 
-	public boolean hasCooldown(@NotNull UUID uniqueId) {
+	public synchronized boolean hasCooldown(@NotNull UUID uniqueId) {
 		if (!queueCooldown.containsKey(uniqueId))
 			return false;
 
@@ -89,14 +100,14 @@ public class AuctionController implements Listener {
 			return false;
 		}
 
-		return false;
+		return true;
 	}
 
-	public void setCooldown(@NotNull UUID uniqueId) {
+	public synchronized void setCooldown(@NotNull UUID uniqueId) {
 		queueCooldown.put(uniqueId, System.currentTimeMillis());
 	}
 
-	public int getPositionInQueue(@NotNull AuctionData auctionData) {
+	public synchronized int getPositionInQueue(@NotNull AuctionData auctionData) {
 		int position = 1;
 		for (AuctionData data : auctionQueue) {
 			if (data == auctionData)
@@ -108,10 +119,12 @@ public class AuctionController implements Listener {
 		return 0;
 	}
 
-	public @Nullable AuctionData removeFirstItemFromQueue(@NotNull AuctionPlayer auctionPlayer) {
-		for (AuctionData data : auctionQueue) {
+	public synchronized @Nullable AuctionData removeFirstItemFromQueue(@NotNull AuctionPlayer auctionPlayer) {
+		Iterator<AuctionData> iterator = auctionQueue.iterator();
+		while (iterator.hasNext()) {
+			AuctionData data = iterator.next();
 			if (data.getAuctioneer().getUniqueId().equals(auctionPlayer.getUniqueId())) {
-				auctionQueue.remove(data);
+				iterator.remove();
 				logItemMessage(data, "Item removed from auction queue. Auctioneer: %s Amount: %d Item: %s NBT: %s");
 				return data;
 			}
@@ -149,7 +162,7 @@ public class AuctionController implements Listener {
 	 * @param auctionData the auction data associated with the auction
 	 * @return true if queued, false if executing immediately
 	 */
-	public boolean queueAuction(@NotNull AuctionData auctionData) {
+	public synchronized boolean queueAuction(@NotNull AuctionData auctionData) {
 		if (hasActiveAuction() || auctionQueue.size() != 0) {
 			auctionQueue.add(auctionData);
 			logItemMessage(auctionData,
@@ -174,9 +187,11 @@ public class AuctionController implements Listener {
 		return false;
 	}
 
-	public void shutdown() {
+	public synchronized void shutdown() {
 		for (AuctionData queued : auctionQueue) {
-			queued.addSavedItemToPlayer(queued.getAuctioneer(), playerController, scheduler);
+			rewards.createItemReward(queued.getAuctioneer().getUniqueId(), queued.getId(),
+					queued.getItem(), queued.getAmount(), queued.getWorld());
+			cancelRecord(queued.getId(), "SELLER_MAILBOX", "NONE");
 		}
 
 		auctionQueue.clear();
@@ -188,12 +203,14 @@ public class AuctionController implements Listener {
 	}
 
 	private void handleAuctionCompleted() {
-		activeAuction = null;
-		lastAuctionEndTimeMillis = System.currentTimeMillis();
-		withSync(this::pullNextAuctionFromQueue);
+		synchronized (this) {
+			activeAuction = null;
+			lastAuctionEndTimeMillis = System.currentTimeMillis();
+			pullNextAuctionFromQueue();
+		}
 	}
 
-	private void pullNextAuctionFromQueue() {
+	private synchronized void pullNextAuctionFromQueue() {
 		if (auctionQueue.isEmpty())
 			return;
 
@@ -205,10 +222,11 @@ public class AuctionController implements Listener {
 			}
 		}
 
-		scheduler.runAsyncDelayedTask(() -> withSync(this::startNextAuctionFromQueue), delay);
+		scheduler.runAsyncDelayedTask(
+				() -> scheduler.runSyncTask(() -> withSync(this::startNextAuctionFromQueue)), delay);
 	}
 
-	private void startNextAuctionFromQueue() {
+	private synchronized void startNextAuctionFromQueue() {
 		if (auctionQueue.isEmpty())
 			return;
 
@@ -237,5 +255,156 @@ public class AuctionController implements Listener {
 				data.getAmount(),
 				data.getItem().getType(),
 				itemNbt));
+	}
+
+	public synchronized @Nullable AuctionData getQueuedAuction(@NotNull UUID auctionId) {
+		return auctionQueue.stream().filter(data -> data.getId().equals(auctionId)).findFirst().orElse(null);
+	}
+
+	public synchronized boolean ownsActiveOrQueuedAuction(@NotNull UUID playerId) {
+		if (activeAuction != null
+				&& activeAuction.getAuctionData().getAuctioneer().getUniqueId().equals(playerId)) {
+			return true;
+		}
+		return auctionQueue.stream()
+				.anyMatch(data -> data.getAuctioneer().getUniqueId().equals(playerId));
+	}
+
+	public synchronized int getQueuePosition(@NotNull UUID auctionId) {
+		int position = 1;
+		for (AuctionData data : auctionQueue) {
+			if (data.getId().equals(auctionId)) {
+				return position;
+			}
+			position++;
+		}
+		return 0;
+	}
+
+	public synchronized long estimateStartAtMillis(@NotNull UUID auctionId) {
+		long seconds = 0L;
+		if (activeAuction != null) {
+			seconds += Math.max(0, activeAuction.getRemainingSeconds());
+			seconds += config.getConfig().getInt("general.time-between");
+		}
+		for (AuctionData data : auctionQueue) {
+			if (data.getId().equals(auctionId)) {
+				return System.currentTimeMillis() + seconds * 1000L;
+			}
+			seconds += data.getStartingAuctionTime();
+			seconds += config.getConfig().getInt("general.time-between");
+		}
+		return 0L;
+	}
+
+	public synchronized @Nullable AuctionData cancelQueuedAuction(@NotNull UUID auctionId,
+	                                                              @NotNull UUID ownerId) {
+		Iterator<AuctionData> iterator = auctionQueue.iterator();
+		while (iterator.hasNext()) {
+			AuctionData data = iterator.next();
+			if (!data.getId().equals(auctionId)
+					|| !data.getAuctioneer().getUniqueId().equals(ownerId)) {
+				continue;
+			}
+			iterator.remove();
+			rewards.createItemReward(ownerId, data.getId(), data.getItem(), data.getAmount(), data.getWorld());
+			cancelRecord(data.getId(), "SELLER_MAILBOX", "NONE");
+			return data;
+		}
+		return null;
+	}
+
+	public synchronized boolean cancelActiveAuction(@NotNull UUID auctionId, @NotNull UUID ownerId,
+	                                                boolean refundListingFee) {
+		if (activeAuction == null
+				|| !activeAuction.getAuctionData().getId().equals(auctionId)
+				|| !activeAuction.getAuctionData().getAuctioneer().getUniqueId().equals(ownerId)) {
+			return false;
+		}
+		activeAuction.cancelAuction(refundListingFee);
+		return true;
+	}
+
+	private void recoverPersistedAuctions() {
+		database.getAuctionsByStatus(List.of(AuctionRecordStatus.PREPARING,
+						AuctionRecordStatus.ACTIVE, AuctionRecordStatus.QUEUED))
+				.thenAccept(records -> {
+					for (AuctionRecord record : records) {
+						switch (record.getStatus()) {
+							case PREPARING -> quarantineInterruptedPreparation(record);
+							case ACTIVE -> recoverInterruptedActiveAuction(record);
+							case QUEUED -> restoreQueuedAuction(record);
+							default -> {
+							}
+						}
+					}
+				})
+				.exceptionally(error -> {
+					logger.severe("Could not recover persisted auctions",
+							error instanceof Exception exception ? exception : new RuntimeException(error));
+					return null;
+				});
+	}
+
+	private void quarantineInterruptedPreparation(@NotNull AuctionRecord record) {
+		logger.warning("Auction " + record.getId() + " for " + record.getAuctioneerId()
+				+ " was interrupted while moving inventory into escrow. It was cancelled as MANUAL_REVIEW "
+				+ "without automatically creating an item reward to avoid duplication.");
+		record.cancel("MANUAL_REVIEW", "NONE");
+		database.saveAuctionRecord(record);
+	}
+
+	private void recoverInterruptedActiveAuction(@NotNull AuctionRecord record) {
+		java.util.concurrent.CompletableFuture<Void> itemRecovery;
+		try {
+			itemRecovery = rewards.createItemReward(record.getAuctioneerId(), record.getId(), record.getItem(),
+					record.getAmount(), record.getWorld());
+		} catch (Exception exception) {
+			logger.severe("Could not restore active auction item " + record.getId(), exception);
+			return;
+		}
+
+		itemRecovery.thenCompose(ignored -> database.getBidRecords(record.getId())).thenAccept(bids -> {
+			Map<UUID, Long> highestByBidder = new HashMap<>();
+			for (AuctionBidRecord bid : bids) {
+				highestByBidder.merge(bid.getBidderId(), bid.getAmountMinor(), Math::max);
+			}
+			for (Map.Entry<UUID, Long> entry : highestByBidder.entrySet()) {
+				rewards.createMoneyReward(entry.getKey(), record.getId(), RewardKind.REFUND, entry.getValue());
+			}
+			database.transitionAuction(record.getId(), AuctionRecordStatus.ACTIVE, AuctionRecordStatus.CANCELLED);
+		}).exceptionally(error -> {
+			logger.severe("Could not recover active auction " + record.getId(),
+					error instanceof Exception exception ? exception : new RuntimeException(error));
+			return null;
+		});
+	}
+
+	private void restoreQueuedAuction(@NotNull AuctionRecord record) {
+		playerController.getPlayer(record.getAuctioneerId()).thenAccept(auctionPlayer -> {
+			try {
+				AuctionData data = new AuctionData(record.getId(), auctionPlayer, record.getItem(),
+						record.getAmount(), record.getDurationSeconds(), record.getStartingPriceMinor(),
+						record.getIncrementMinor(), record.getAutoBuyMinor(), record.isSealed(), record.getWorld());
+				data.gatherAdditionalData(logger);
+				scheduler.runSyncTask(() -> queueAuction(data));
+			} catch (Exception exception) {
+				logger.severe("Could not restore queued auction " + record.getId(), exception);
+				record.cancel("MANUAL_REVIEW", "NONE");
+				database.saveAuctionRecord(record);
+			}
+		}).exceptionally(error -> {
+			logger.severe("Could not load auctioneer while restoring queued auction " + record.getId(),
+					error instanceof Exception exception ? exception : new RuntimeException(error));
+			return null;
+		});
+	}
+
+	private void cancelRecord(@NotNull UUID auctionId, @NotNull String destination,
+	                          @NotNull String refundStatus) {
+		database.getAuctionRecord(auctionId).thenAccept(optional -> optional.ifPresent(record -> {
+			record.cancel(destination, refundStatus);
+			database.saveAuctionRecord(record);
+		}));
 	}
 }

@@ -36,6 +36,28 @@ log/
 target/
 dependency-reduced-pom.xml
 
+# Local Minecraft server and MockBukkit runtime
+/plugins/
+/server/
+/run/
+/logs/
+/world/
+/world_nether/
+/world_the_end/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.vscode/
+hs_err_pid*
+replay_pid*
+
 # External tool builders
 .externalToolBuilders/
 
