@@ -42,6 +42,7 @@ import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.PrepareAnvilEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.AnvilInventory;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.InventoryView;
@@ -207,13 +208,22 @@ public final class AuctionGuiController implements Listener {
 				|| holder.getPage() != GuiPage.ANVIL_INPUT) {
 			return;
 		}
-		ItemStack left = event.getInventory().getItem(0);
+		AnvilInventory inventory = event.getInventory();
+		ItemStack left = inventory.getItem(0);
 		if (left == null) {
 			return;
 		}
 		ItemStack output = left.clone();
+		String renameText = inventory.getRenameText();
+		if (renameText != null) {
+			ItemMeta meta = output.getItemMeta();
+			meta.setDisplayName(renameText);
+			output.setItemMeta(meta);
+		}
 		event.setResult(output);
-		event.getInventory().setRepairCost(0);
+		inventory.setRepairCost(0);
+		inventory.setRepairCostAmount(0);
+		inventory.setMaximumRepairCost(Integer.MAX_VALUE);
 	}
 
 	@EventHandler
@@ -1276,15 +1286,22 @@ public final class AuctionGuiController implements Listener {
 				|| session.inputTarget == null) {
 			return;
 		}
-		ItemMeta meta = event.getCurrentItem().getItemMeta();
-		String input = ChatColor.stripColor(meta.getDisplayName());
+		if (!(event.getView().getTopInventory() instanceof AnvilInventory inventory)) {
+			return;
+		}
+		String input = inventory.getRenameText();
+		GuiSession.InputTarget inputTarget = session.inputTarget;
 		try {
-			if (session.inputTarget == GuiSession.InputTarget.DURATION) {
+			if (input == null || input.isBlank()) {
+				throw new IllegalArgumentException();
+			}
+			if (inputTarget == GuiSession.InputTarget.DURATION) {
 				int seconds = Integer.parseInt(input.trim());
 				if (!validDuration(seconds)) {
 					throw new IllegalArgumentException();
 				}
 				session.draft.setDurationSeconds(seconds);
+				session.inputTarget = null;
 				openWizardMode(player, session);
 				return;
 			}
@@ -1293,10 +1310,11 @@ public final class AuctionGuiController implements Listener {
 			if (money <= 0) {
 				throw new IllegalArgumentException();
 			}
-			switch (session.inputTarget) {
+			switch (inputTarget) {
 				case BID -> {
 					Auction active = auctions.getActiveAuction();
 					if (active == null || session.selectedAuctionId == null) {
+						session.inputTarget = null;
 						openCurrent(player, session);
 						return;
 					}
@@ -1304,21 +1322,26 @@ public final class AuctionGuiController implements Listener {
 					if (!view.auctionId().equals(session.selectedAuctionId)
 							|| view.revision() != session.selectedRevision) {
 						signal(player, false, "竞拍状态已变化，请重新输入");
+						session.inputTarget = null;
 						openCurrent(player, session);
 						return;
 					}
+					session.inputTarget = null;
 					openBidConfirmation(player, session, view, money, false);
 				}
 				case STARTING_PRICE -> {
 					session.draft.setStartingPriceMinor(money);
+					session.inputTarget = null;
 					openWizardPrice(player, session);
 				}
 				case INCREMENT -> {
 					session.draft.setIncrementMinor(money);
+					session.inputTarget = null;
 					openWizardPrice(player, session);
 				}
 				case BUYOUT -> {
 					session.draft.setAutoBuyMinor(money);
+					session.inputTarget = null;
 					openWizardPrice(player, session);
 				}
 				default -> throw new IllegalArgumentException();
