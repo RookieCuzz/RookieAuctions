@@ -1156,7 +1156,9 @@ public final class AuctionGuiController implements Listener {
 						signal(player, false, "领奖箱加载失败");
 						return;
 					}
-					renderMailbox(player, session, records);
+					List<RewardRecord> visibleRecords = session.mailboxHistory
+							? MailboxHistoryView.claimedOnly(records) : records;
+					renderMailbox(player, session, visibleRecords);
 				}, player));
 	}
 
@@ -1179,7 +1181,7 @@ public final class AuctionGuiController implements Listener {
 			RewardRecord reward = records.get(index);
 			int slot = 9 + index - start;
 			session.visibleEntries.put(slot, reward.getId());
-			inventory.setItem(slot, rewardItem(reward));
+			inventory.setItem(slot, rewardItem(reward, session.mailboxHistory));
 		}
 		if (records.isEmpty()) {
 			inventory.setItem(22, GuiItems.item(Material.CHEST, "&7此分类没有奖励"));
@@ -1536,7 +1538,22 @@ public final class AuctionGuiController implements Listener {
 				selected ? "&a" + name : "&7" + name);
 	}
 
-	private @NotNull ItemStack rewardItem(@NotNull RewardRecord reward) {
+	private @NotNull ItemStack rewardItem(@NotNull RewardRecord reward, boolean history) {
+		if (history) {
+			List<String> details = MailboxHistoryView.details(reward);
+			if (reward.getKind() == RewardKind.ITEM) {
+				try {
+					return GuiItems.auctionItem(reward.getItem(), reward.getAmount(),
+							details.toArray(String[]::new));
+				} catch (IOException exception) {
+					return GuiItems.item(Material.BARRIER, "&c物品数据损坏", details);
+				}
+			}
+			return GuiItems.item(reward.getKind() == RewardKind.REFUND
+						? Material.GOLD_NUGGET : Material.EMERALD,
+					reward.getKind() == RewardKind.REFUND ? "&6拍卖退款" : "&a拍卖收入", details);
+		}
+
 		String state = switch (reward.getState()) {
 			case PENDING -> "&a待领取";
 			case CLAIMING -> "&e领取中";
