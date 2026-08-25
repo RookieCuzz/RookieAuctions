@@ -14,6 +14,7 @@ import java.io.Reader;
 @Singleton
 public class ConfigController extends FileHandler {
 	private static final String RESOURCE_NAME = "config.yml";
+	private static final int ANTI_SNIPE_CONFIG_VERSION = 2;
 	private FileConfiguration fileConfiguration;
 
 	@Inject
@@ -22,6 +23,10 @@ public class ConfigController extends FileHandler {
 
 		try {
 			reload();
+			if (!isAntiSnipeConfigCurrent()) {
+				logger.warning("Anti-snipe is disabled because config.yml uses the legacy add-time format. "
+						+ "Update antisnipe.config-version to 2 and review seconds-for-start/time.");
+			}
 		} catch (IOException e) {
 			logger.severe("Could not load config file!", e);
 		}
@@ -34,5 +39,10 @@ public class ConfigController extends FileHandler {
 
 	public @NotNull FileConfiguration getConfig() {
 		return fileConfiguration;
+	}
+
+	public boolean isAntiSnipeConfigCurrent() {
+		return fileConfiguration != null
+				&& fileConfiguration.getInt("antisnipe.config-version", 0) >= ANTI_SNIPE_CONFIG_VERSION;
 	}
 }

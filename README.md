@@ -17,6 +17,16 @@ RookieCuzz (RookieAuctions fork), Elian and Silverwolfg11 (upstream)
 ## Building
 Clone the project from GitHub, then run `mvn clean package` in your terminal at the project directory to build the project.
 
+## Anti-snipe configuration migration
+
+Anti-snipe configuration version 2 changes `antisnipe.time` from seconds-to-add to the target
+remaining time after a qualifying bid. For example, `time: 100` resets an eligible auction to
+100 seconds, but never beyond its original duration and never shortens its current remaining time.
+
+Existing installations must update the `antisnipe` section manually and set `config-version: 2`.
+Until then, anti-snipe is disabled and the server logs a migration warning. The bundled defaults use a
+300-second trigger window, a 300-second reset target, and at most three resets per auction.
+
 ## API
 To depend on this plugin in your own project, add the following to your maven / gradle project.
 

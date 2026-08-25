@@ -98,7 +98,6 @@ public class BidList {
 			auction.end();
 		}
 
-		auction.checkAntiSnipe();
 	}
 
 	public boolean playerHasAnyBids(UUID id) {

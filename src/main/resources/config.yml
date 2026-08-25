@@ -131,13 +131,17 @@ sealed-auctions:
 
 # Anti-snipe is to stop players from bidding last-second and winning
 antisnipe:
+  # Version 2 changes `time` from "seconds to add" to "target remaining seconds".
+  # Existing servers must update this section manually. Anti-snipe is disabled when this key is missing or older.
+  config-version: 2
   enabled: true
-  # The last X seconds which should be considered a snipe and have anti-snipe run
-  seconds-for-start: 3
-  # How many times can the anti-snipe run before cancelling?
+  # Trigger only when the remaining time is strictly lower than this value.
+  seconds-for-start: 300
+  # Maximum number of resets during one auction.
   run-times: 3
-  # How much time should be added when anti-snipe is run?
-  time: 5
+  # Target remaining seconds. The actual target never exceeds the auction's original duration.
+  # Example: setting this to 100 resets an eligible auction to 100 seconds.
+  time: 300
 
 # Scoreboard for auctions. Auto-updating
 scoreboard:

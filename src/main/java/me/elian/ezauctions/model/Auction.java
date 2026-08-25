@@ -216,26 +216,33 @@ public class Auction implements Runnable {
 		}
 	}
 
-	public void checkAntiSnipe() {
-		if (!running)
+	public synchronized void checkAntiSnipe() {
+		if (!running || !config.isAntiSnipeConfigCurrent())
 			return;
 
 		if (!config.getConfig().getBoolean("antisnipe.enabled"))
 			return;
 
-		if (antiSnipeRunTimes >= config.getConfig().getInt("antisnipe.run-times"))
-			return;
-
-		if (remainingSeconds > config.getConfig().getInt("antisnipe.seconds-for-start"))
+		int targetRemainingSeconds = AntiSnipePolicy.targetRemainingSeconds(
+				remainingSeconds,
+				auctionData.getStartingAuctionTime(),
+				config.getConfig().getInt("antisnipe.seconds-for-start"),
+				config.getConfig().getInt("antisnipe.time"),
+				antiSnipeRunTimes,
+				config.getConfig().getInt("antisnipe.run-times"));
+		if (targetRemainingSeconds <= remainingSeconds)
 			return;
 
 		antiSnipeRunTimes++;
-		remainingSeconds += config.getConfig().getInt("antisnipe.time");
+		remainingSeconds = targetRemainingSeconds;
 		revision++;
-		int added = config.getConfig().getInt("antisnipe.time");
 		for (Player player : plugin.getServer().getOnlinePlayers()) {
 			scheduler.runPlayerRegionTask(() -> {
-				player.sendTitle("§c延长 " + added + " 秒", "§7触发反狙击保护", 0, 30, 10);
+				if (!player.isOnline()) {
+					return;
+				}
+				player.sendTitle("§c剩余时间重置为 " + targetRemainingSeconds + " 秒",
+						"§7触发防秒拍保护", 0, 30, 10);
 				player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.7F, 1.25F);
 			}, player);
 		}
@@ -628,6 +635,7 @@ public class Auction implements Runnable {
 		}
 
 		bidList.placeBid(bid);
+		checkAntiSnipe();
 		revision++;
 		result.complete(new BidOutcome(BidOutcome.Status.SUCCESS, acceptedAmount,
 				viewFor(bid.auctionPlayer())));

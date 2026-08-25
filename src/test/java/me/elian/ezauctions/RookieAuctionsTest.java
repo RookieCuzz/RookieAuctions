@@ -8,11 +8,13 @@ import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import me.elian.ezauctions.controller.AuctionController;
 import me.elian.ezauctions.controller.AuctionPlayerController;
+import me.elian.ezauctions.controller.ConfigController;
 import me.elian.ezauctions.data.Database;
 import me.elian.ezauctions.gui.AuctionGuiHolder;
 import me.elian.ezauctions.gui.GuiPage;
 import me.elian.ezauctions.helper.ItemHelper;
 import me.elian.ezauctions.model.Auction;
+import me.elian.ezauctions.model.AuctionData;
 import me.elian.ezauctions.model.AuctionPlayer;
 import me.elian.ezauctions.model.AuctionRecord;
 import me.elian.ezauctions.model.AuctionView;
@@ -29,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -208,7 +211,8 @@ class RookieAuctionsTest {
 		economy.setBalance(seller, 100D);
 
 		assertTrue(server.dispatchCommand(seller, "auction"));
-		server.getScheduler().performTicks(5);
+		awaitCondition(() -> seller.getOpenInventory().getTopInventory().getItem(47) != null
+				&& seller.getOpenInventory().getTopInventory().getItem(47).getType() == Material.SMITHING_TABLE);
 		assertPage(seller, GuiPage.CURRENT);
 
 		seller.simulateInventoryClick(seller.getOpenInventory(), ClickType.LEFT, 47);
@@ -258,6 +262,112 @@ class RookieAuctionsTest {
 				view.revision(), view.startingPriceMinor(), false));
 		assertEquals(BidOutcome.Status.STALE_VIEW, replay.status());
 		assertTrue(auctions.cancelActiveAuction(view.auctionId(), seller.getUniqueId(), false));
+	}
+
+	@Test
+	void antiSnipeUsesStrictTargetResetsAndStopsAfterThreeRuns() throws Exception {
+		ConfigController config = plugin.getInjector().getInstance(ConfigController.class);
+		Auction auction = plugin.getInjector().getInstance(Auction.class);
+		AuctionData data = auctionData(600);
+		setAuctionState(auction, data, 300, 10L);
+		config.getConfig().set("antisnipe.config-version", 2);
+		config.getConfig().set("antisnipe.enabled", true);
+		config.getConfig().set("antisnipe.seconds-for-start", 300);
+		config.getConfig().set("antisnipe.run-times", 3);
+		config.getConfig().set("antisnipe.time", 100);
+
+		try {
+			auction.checkAntiSnipe();
+			assertEquals(300, auction.getRemainingSeconds(), "The trigger threshold must be strict");
+			assertEquals(10L, auction.getRevision());
+
+			setField(auction, "remainingSeconds", 150);
+			auction.checkAntiSnipe();
+			assertEquals(150, auction.getRemainingSeconds(), "A reset must never shorten the countdown");
+			assertEquals(0, intField(auction, "antiSnipeRunTimes"));
+
+			for (int run = 0; run < 3; run++) {
+				setField(auction, "remainingSeconds", 99);
+				long previousRevision = auction.getRevision();
+				auction.checkAntiSnipe();
+				assertEquals(100, auction.getRemainingSeconds(), "time: 100 must reset to 100 seconds");
+				assertEquals(previousRevision + 1, auction.getRevision());
+			}
+			assertEquals(3, intField(auction, "antiSnipeRunTimes"));
+
+			setField(auction, "remainingSeconds", 99);
+			long exhaustedRevision = auction.getRevision();
+			auction.checkAntiSnipe();
+			assertEquals(99, auction.getRemainingSeconds());
+			assertEquals(exhaustedRevision, auction.getRevision());
+		} finally {
+			config.getConfig().set("antisnipe.config-version", 2);
+			config.getConfig().set("antisnipe.enabled", true);
+			config.getConfig().set("antisnipe.seconds-for-start", 300);
+			config.getConfig().set("antisnipe.run-times", 3);
+			config.getConfig().set("antisnipe.time", 300);
+		}
+	}
+
+	@Test
+	void antiSnipeCapsShortAuctionsAndLegacyConfigurationDisablesIt() throws Exception {
+		ConfigController config = plugin.getInjector().getInstance(ConfigController.class);
+		Auction auction = plugin.getInjector().getInstance(Auction.class);
+		setAuctionState(auction, auctionData(60), 59, 20L);
+		config.getConfig().set("antisnipe.enabled", true);
+		config.getConfig().set("antisnipe.seconds-for-start", 300);
+		config.getConfig().set("antisnipe.run-times", 3);
+		config.getConfig().set("antisnipe.time", 300);
+
+		try {
+			config.getConfig().set("antisnipe.config-version", 2);
+			auction.checkAntiSnipe();
+			assertEquals(60, auction.getRemainingSeconds(),
+					"The reset target cannot exceed the original duration");
+
+			setField(auction, "remainingSeconds", 30);
+			setField(auction, "antiSnipeRunTimes", 0);
+			long legacyRevision = auction.getRevision();
+			config.getConfig().set("antisnipe.config-version", null);
+			assertFalse(config.isAntiSnipeConfigCurrent());
+			auction.checkAntiSnipe();
+			assertEquals(30, auction.getRemainingSeconds());
+			assertEquals(legacyRevision, auction.getRevision());
+			assertEquals(0, intField(auction, "antiSnipeRunTimes"));
+		} finally {
+			config.getConfig().set("antisnipe.config-version", 2);
+			config.getConfig().set("antisnipe.enabled", true);
+			config.getConfig().set("antisnipe.seconds-for-start", 300);
+			config.getConfig().set("antisnipe.run-times", 3);
+			config.getConfig().set("antisnipe.time", 300);
+		}
+	}
+
+	private AuctionData auctionData(int durationSeconds) {
+		return new AuctionData(UUID.randomUUID(), new AuctionPlayer(UUID.randomUUID()),
+				new ItemStack(Material.DIAMOND), 1, durationSeconds, 100L, 100L, 0L,
+				false, "world");
+	}
+
+	private void setAuctionState(Auction auction, AuctionData data, int remainingSeconds,
+	                             long revision) throws ReflectiveOperationException {
+		setField(auction, "auctionData", data);
+		setField(auction, "running", true);
+		setField(auction, "remainingSeconds", remainingSeconds);
+		setField(auction, "antiSnipeRunTimes", 0);
+		setField(auction, "revision", revision);
+	}
+
+	private void setField(Object target, String fieldName, Object value) throws ReflectiveOperationException {
+		Field field = target.getClass().getDeclaredField(fieldName);
+		field.setAccessible(true);
+		field.set(target, value);
+	}
+
+	private int intField(Object target, String fieldName) throws ReflectiveOperationException {
+		Field field = target.getClass().getDeclaredField(fieldName);
+		field.setAccessible(true);
+		return field.getInt(target);
 	}
 
 	private void assertPage(PlayerMock player, GuiPage expected) {
