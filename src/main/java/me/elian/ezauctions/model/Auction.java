@@ -14,6 +14,7 @@ import me.elian.ezauctions.scheduler.CancellableTask;
 import me.elian.ezauctions.scheduler.TaskScheduler;
 import net.kyori.adventure.text.minimessage.tag.resolver.Formatter;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
+import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import net.milkbowl.vault.economy.Economy;
 import net.milkbowl.vault.economy.EconomyResponse;
 import net.milkbowl.vault.permission.Permission;
@@ -25,9 +26,12 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.math.BigDecimal;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Supplier;
+import java.util.logging.Level;
 
 public class Auction implements Runnable {
 	private final Plugin plugin;
@@ -123,7 +127,29 @@ public class Auction implements Runnable {
 		autoCancelTime = config.getConfig().getInt("auctions.auto-cancel-no-bids", 0);
 
 		loadAuctionData(auctionData);
-		database.transitionAuction(auctionData.getId(), AuctionRecordStatus.QUEUED, AuctionRecordStatus.ACTIVE);
+		database.transitionAuction(auctionData.getId(), AuctionRecordStatus.QUEUED, AuctionRecordStatus.ACTIVE)
+				.whenComplete((activated, error) -> {
+					if (error != null) {
+						plugin.getLogger().log(Level.SEVERE,
+								"Could not mark auction " + auctionData.getId() + " as active",
+								error);
+						return;
+					}
+					if (!Boolean.TRUE.equals(activated)) {
+						plugin.getLogger().severe("Could not mark auction " + auctionData.getId()
+								+ " as active because its persisted state was not QUEUED");
+						return;
+					}
+					scheduler.runSyncTask(() -> {
+						synchronized (this) {
+							if (!plugin.isEnabled() || !running || this.auctionData != auctionData) {
+								return;
+							}
+							messages.broadcastAuctionMessage(playerController.getOnlinePlayers(), this,
+									false, "auction.info");
+						}
+					});
+				});
 		repeatingTask = scheduler.runSyncRepeatingTask(plugin, this, 1, 1);
 	}
 
@@ -262,14 +288,23 @@ public class Auction implements Runnable {
 	private void handleAuctionTimeCompleted() {
 		Bid winningBid = bidList.getHighestBid();
 		if (winningBid == null) {
-			rewards.createItemReward(auctionData.getAuctioneer().getUniqueId(), auctionData.getId(),
-					auctionData.getItem(), auctionData.getAmount(), auctionData.getWorld());
+			messages.broadcastAuctionResultMessage(playerController.getOnlinePlayers(), this,
+					false, "auction.finish.no_bids");
+			createRewardAndNotify(auctionData.getAuctioneer().getUniqueId(), "seller item return",
+					"auction.finish.seller.no_bids",
+					() -> rewards.createItemReward(auctionData.getAuctioneer().getUniqueId(), auctionData.getId(),
+							auctionData.getItem(), auctionData.getAmount(), auctionData.getWorld()));
 			completeRecord(null, 0L, 0L, 0L, "SELLER_MAILBOX");
 			return;
 		}
 
-		rewards.createItemReward(winningBid.auctionPlayer().getUniqueId(), auctionData.getId(),
-				auctionData.getItem(), auctionData.getAmount(), auctionData.getWorld());
+		messages.broadcastAuctionResultMessage(playerController.getOnlinePlayers(), this,
+				false, "auction.finish");
+
+		createRewardAndNotify(winningBid.auctionPlayer().getUniqueId(), "winner item",
+				"auction.finish.winner",
+				() -> rewards.createItemReward(winningBid.auctionPlayer().getUniqueId(), auctionData.getId(),
+						auctionData.getItem(), auctionData.getAmount(), auctionData.getWorld()));
 
 		OfflinePlayer offlinePlayer = auctionData.getAuctioneer().getOfflinePlayer();
 		long finalPriceMinor = winningBid.amountMinor();
@@ -281,10 +316,13 @@ public class Auction implements Runnable {
 
 		long taxMinor = Money.percentage(finalPriceMinor, taxPercentage);
 		long payoutMinor = finalPriceMinor - taxMinor;
-		rewards.createMoneyReward(auctionData.getAuctioneer().getUniqueId(), auctionData.getId(),
-				RewardKind.INCOME, payoutMinor);
+		createRewardAndNotify(auctionData.getAuctioneer().getUniqueId(), "seller income",
+				"auction.finish.seller",
+				() -> rewards.createMoneyReward(auctionData.getAuctioneer().getUniqueId(), auctionData.getId(),
+						RewardKind.INCOME, payoutMinor),
+				Formatter.number("payout", Money.toMajor(payoutMinor)));
 
-		returnBidderMoney(false);
+		returnBidderMoney(false, true);
 		completeRecord(winningBid.auctionPlayer().getUniqueId(), finalPriceMinor, payoutMinor, taxMinor,
 				"WINNER_MAILBOX");
 
@@ -310,22 +348,85 @@ public class Auction implements Runnable {
 	}
 
 	private void returnBidderMoney(boolean returnToHighestBidder) {
+		returnBidderMoney(returnToHighestBidder, false);
+	}
+
+	private void returnBidderMoney(boolean returnToHighestBidder, boolean notifyLosers) {
 		if (bidList == null) {
 			return;
 		}
-		Map<AuctionPlayer, Long> bidMap = bidList.getBidMapMinor();
+		Map<UUID, Long> refundableBids = new LinkedHashMap<>();
+		for (Map.Entry<AuctionPlayer, Long> entry : bidList.getBidMapMinor().entrySet()) {
+			refundableBids.merge(entry.getKey().getUniqueId(), entry.getValue(), Math::max);
+		}
 
-		if (bidMap.isEmpty())
+		if (refundableBids.isEmpty())
 			return;
 
 		if (!returnToHighestBidder) {
-			bidMap.remove(bidList.getHighestBid().auctionPlayer());
+			refundableBids.remove(bidList.getHighestBid().auctionPlayer().getUniqueId());
 		}
 
-		for (Map.Entry<AuctionPlayer, Long> entry : bidMap.entrySet()) {
-			rewards.createMoneyReward(entry.getKey().getUniqueId(), auctionData.getId(),
-					RewardKind.REFUND, entry.getValue());
+		for (Map.Entry<UUID, Long> entry : refundableBids.entrySet()) {
+			if (notifyLosers) {
+				createRewardAndNotify(entry.getKey(), "bidder refund", "auction.finish.loser",
+						() -> rewards.createMoneyReward(entry.getKey(), auctionData.getId(),
+								RewardKind.REFUND, entry.getValue()),
+						Formatter.number("refund", Money.toMajor(entry.getValue())));
+			} else {
+				rewards.createMoneyReward(entry.getKey(), auctionData.getId(), RewardKind.REFUND, entry.getValue());
+			}
 		}
+	}
+
+	private void createRewardAndNotify(@NotNull UUID recipientId, @NotNull String rewardDescription,
+	                                   @NotNull String messageKey,
+	                                   @NotNull Supplier<CompletableFuture<Void>> rewardCreator,
+	                                   TagResolver... resolvers) {
+		CompletableFuture<Void> rewardCreation;
+		try {
+			rewardCreation = rewardCreator.get();
+		} catch (RuntimeException error) {
+			logRewardCreationFailure(recipientId, rewardDescription, error);
+			return;
+		}
+		notifyAfterRewardCreated(rewardCreation, recipientId, rewardDescription, messageKey, resolvers);
+	}
+
+	private void notifyAfterRewardCreated(@NotNull CompletableFuture<Void> rewardCreation,
+	                                      @NotNull UUID recipientId, @NotNull String rewardDescription,
+	                                      @NotNull String messageKey, TagResolver... resolvers) {
+		rewardCreation.whenComplete((ignored, error) -> {
+			if (error != null) {
+				logRewardCreationFailure(recipientId, rewardDescription, error);
+				return;
+			}
+			if (!plugin.isEnabled()) {
+				return;
+			}
+
+			scheduler.runSyncTask(() -> {
+				if (!plugin.isEnabled()) {
+					return;
+				}
+				Player recipient = plugin.getServer().getPlayer(recipientId);
+				if (recipient == null || !recipient.isOnline()) {
+					return;
+				}
+				scheduler.runPlayerRegionTask(() -> {
+					if (plugin.isEnabled() && recipient.isOnline()) {
+						messages.sendAuctionResultMessage(recipient, messageKey, this, resolvers);
+					}
+				}, recipient);
+			});
+		});
+	}
+
+	private void logRewardCreationFailure(@NotNull UUID recipientId, @NotNull String rewardDescription,
+	                                      @NotNull Throwable error) {
+		plugin.getLogger().log(Level.SEVERE,
+				"Could not create " + rewardDescription + " reward for auction "
+						+ auctionData.getId() + " and player " + recipientId, error);
 	}
 
 	public synchronized @NotNull AuctionView viewFor(@Nullable AuctionPlayer viewer) {

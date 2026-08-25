@@ -5,6 +5,7 @@ import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -43,7 +44,7 @@ abstract class FileHandler {
 			createFileFromResource();
 			File file = path.toFile();
 			try (FileInputStream inputStream = new FileInputStream(file); Reader reader =
-					new InputStreamReader(inputStream)) {
+					new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
 				loadFile(reader);
 			}
 		} catch (IOException | SecurityException e) {
@@ -59,7 +60,7 @@ abstract class FileHandler {
 			if (inputStream == null)
 				throw new IOException();
 
-			try (Reader reader = new InputStreamReader(inputStream)) {
+			try (Reader reader = new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
 				loadFile(reader);
 			}
 		} catch (IOException e) {

@@ -7,6 +7,7 @@ import com.google.inject.Singleton;
 import me.elian.ezauctions.Logger;
 import me.elian.ezauctions.helper.ItemHelper;
 import me.elian.ezauctions.model.*;
+import me.elian.ezauctions.scheduler.TaskScheduler;
 import net.kyori.adventure.platform.bukkit.BukkitAudiences;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.HoverEvent;
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Reader;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -51,19 +53,21 @@ public class MessageController extends FileHandler {
 	private final PaperCommandManager commandManager;
 	private final ConfigController config;
 	private final Economy economy;
+	private final TaskScheduler scheduler;
 	private ResourceBundle bundle;
 	private BukkitAudiences audiences;
 	private String prefixRaw;
 
 	@Inject
 	public MessageController(Plugin plugin, Logger logger, PaperCommandManager commandManager,
-	                         ConfigController config, Economy economy) {
+	                         ConfigController config, Economy economy, TaskScheduler scheduler) {
 		super(plugin, logger, RESOURCE_NAME);
 		this.plugin = plugin;
 		this.logger = logger;
 		this.commandManager = commandManager;
 		this.config = config;
 		this.economy = economy;
+		this.scheduler = scheduler;
 
 		try {
 			reload();
@@ -102,6 +106,20 @@ public class MessageController extends FileHandler {
 		sendComponentToSender(target, message);
 	}
 
+	/**
+	 * Renders a completed auction with the authoritative winning bid exposed, including for sealed auctions.
+	 * Regular auction messages deliberately keep sealed-auction bid details hidden.
+	 */
+	public void sendAuctionResultMessage(@Nullable CommandSender target, @NotNull String key,
+	                                     @NotNull Auction auction, @Nullable TagResolver... resolvers) {
+		if (target == null)
+			return;
+
+		Component message = getAuctionResultComponent(getRawMessage(key), auction.getAuctionData(),
+				auction.getBidList(), auction.getRemainingSeconds(), resolvers);
+		sendComponentToSender(target, message);
+	}
+
 	public void sendAuctionMessage(@Nullable CommandSender target, @NotNull String key, @NotNull AuctionData data,
 	                               @Nullable TagResolver... resolvers) {
 		if (target == null)
@@ -114,11 +132,31 @@ public class MessageController extends FileHandler {
 
 	public void broadcastAuctionMessage(@NotNull Set<AuctionPlayer> onlinePlayers, @NotNull Auction auction,
 	                                    boolean spammy, @NotNull String key, @Nullable TagResolver... resolvers) {
+		Component message = getAuctionComponent(getRawMessage(key), auction.getAuctionData(), auction.getBidList(),
+				auction.getRemainingSeconds(), resolvers);
+		broadcastAuctionComponent(onlinePlayers, auction, spammy, message);
+	}
+
+	/**
+	 * Broadcasts a completed-auction result while revealing the real winner and price of sealed auctions.
+	 */
+	public void broadcastAuctionResultMessage(@NotNull Set<AuctionPlayer> onlinePlayers,
+	                                          @NotNull Auction auction, boolean spammy,
+	                                          @NotNull String key, @Nullable TagResolver... resolvers) {
+		Component message = getAuctionResultComponent(getRawMessage(key), auction.getAuctionData(),
+				auction.getBidList(), auction.getRemainingSeconds(), resolvers);
+		broadcastAuctionComponent(onlinePlayers, auction, spammy, message);
+	}
+
+	private void broadcastAuctionComponent(@NotNull Set<AuctionPlayer> onlinePlayers,
+	                                       @NotNull Auction auction, boolean spammy,
+	                                       @NotNull Component message) {
+		if (!plugin.isEnabled())
+			return;
+
 		UUID auctioneerId = auction.getAuctionData().getAuctioneer().getUniqueId();
 		String world = auction.getAuctionData().getWorld();
 
-		Component message = getAuctionComponent(getRawMessage(key), auction.getAuctionData(), auction.getBidList(),
-				auction.getRemainingSeconds(), resolvers);
 		for (AuctionPlayer ap : onlinePlayers) {
 			// ensure player isn't ignoring all messages
 			if (ap.isIgnoringAll())
@@ -138,16 +176,25 @@ public class MessageController extends FileHandler {
 			if (target == null)
 				continue;
 
-			// ensure player in right world if per-world-broadcast enabled
-			String playerWorld = target.getWorld().getName();
-			if (config.getConfig().getBoolean("auctions.per-world-broadcast")
-					&& world != null && !world.equals(playerWorld))
-				continue;
+			scheduler.runPlayerRegionTask(() -> {
+				if (!plugin.isEnabled() || !target.isOnline())
+					return;
 
-			sendComponentToSender(target, message);
+				// World and message access must happen on the target's owning region on Folia.
+				String playerWorld = target.getWorld().getName();
+				if (config.getConfig().getBoolean("auctions.per-world-broadcast")
+						&& world != null && !world.equals(playerWorld))
+					return;
+
+				sendComponentToSender(target, message);
+			}, target);
 		}
 
-		sendComponentToSender(plugin.getServer().getConsoleSender(), message);
+		scheduler.runSyncTask(() -> {
+			if (plugin.isEnabled()) {
+				sendComponentToSender(plugin.getServer().getConsoleSender(), message);
+			}
+		});
 	}
 
 	public List<Component> getAuctionComponentLines(@NotNull String key, @NotNull Auction auction,
@@ -156,9 +203,9 @@ public class MessageController extends FileHandler {
 		if (raw == null)
 			return new ArrayList<>();
 
-		String booleansReplaced = replaceAuctionPatterns(raw, auction.getAuctionData());
+		String booleansReplaced = replaceAuctionPatterns(raw, auction.getAuctionData(), auction.getBidList(), false);
 		TagResolver[] tagResolvers = getAuctionTagResolvers(auction.getAuctionData(), auction.getBidList(),
-				auction.getRemainingSeconds());
+				auction.getRemainingSeconds(), false);
 		TagResolver[] mergedResolvers = ArrayUtils.addAll(tagResolvers, extraResolvers);
 
 		return Arrays.stream(booleansReplaced.split("\n"))
@@ -175,20 +222,37 @@ public class MessageController extends FileHandler {
 
 	private Component getAuctionComponent(String rawMessage, AuctionData data, @Nullable BidList bidList,
 	                                      int remainingSeconds, TagResolver... extraResolvers) {
+		return getAuctionComponent(rawMessage, data, bidList, remainingSeconds, false, extraResolvers);
+	}
+
+	private Component getAuctionResultComponent(String rawMessage, AuctionData data, @Nullable BidList bidList,
+	                                            int remainingSeconds, TagResolver... extraResolvers) {
+		return getAuctionComponent(rawMessage, data, bidList, remainingSeconds, true, extraResolvers);
+	}
+
+	private Component getAuctionComponent(String rawMessage, AuctionData data, @Nullable BidList bidList,
+	                                      int remainingSeconds, boolean revealSealedResult,
+	                                      TagResolver... extraResolvers) {
 		if (rawMessage == null)
 			return Component.empty();
 
-		String message = replaceAuctionPatterns(rawMessage, data);
-		TagResolver[] tagResolvers = getAuctionTagResolvers(data, bidList, remainingSeconds);
+		String message = replaceAuctionPatterns(rawMessage, data, bidList, revealSealedResult);
+		TagResolver[] tagResolvers = getAuctionTagResolvers(data, bidList, remainingSeconds, revealSealedResult);
 		TagResolver[] mergedResolvers = ArrayUtils.addAll(tagResolvers, extraResolvers);
 
 		Component parsed;
 		try {
 			parsed = MiniMessage.miniMessage().deserialize(message, mergedResolvers);
-			parsed = reconstructAuctionComponentRecursive(parsed, data);
 		} catch (Exception e) {
 			logger.severe("Error parsing message! Auction broadcast will not work correctly!\n" + rawMessage, e);
-			parsed = LegacyComponentSerializer.legacyAmpersand().deserialize(message);
+			return LegacyComponentSerializer.legacyAmpersand().deserialize(message);
+		}
+
+		try {
+			parsed = reconstructAuctionComponentRecursive(parsed, data);
+		} catch (Exception e) {
+			// Keep the valid MiniMessage (including click actions) when a server cannot expose full item metadata.
+			logger.warning("Could not add full item hover data to auction message; using the basic item hover.", e);
 		}
 
 		return parsed;
@@ -222,7 +286,8 @@ public class MessageController extends FileHandler {
 		return returnComponent;
 	}
 
-	private TagResolver[] getAuctionTagResolvers(AuctionData data, BidList bidList, int remainingSeconds) {
+	private TagResolver[] getAuctionTagResolvers(AuctionData data, BidList bidList, int remainingSeconds,
+	                                             boolean revealSealedResult) {
 		ItemStack item = data.getItem();
 
 		String auctioneerName = data.getAuctioneer().getOfflinePlayer().getName();
@@ -235,7 +300,7 @@ public class MessageController extends FileHandler {
 		String highestBidderUniqueId = "";
 		if (bidList != null) {
 			Bid highestBid = bidList.getHighestBid();
-			if (highestBid != null && !data.isSealed()) {
+			if (highestBid != null && (!data.isSealed() || revealSealedResult)) {
 				highestBidAmount = highestBid.amount();
 				highestBidderName = highestBid.auctionPlayer().getOfflinePlayer().getName();
 				highestBidderUniqueId = highestBid.auctionPlayer().getUniqueId().toString();
@@ -265,8 +330,8 @@ public class MessageController extends FileHandler {
 				Placeholder.unparsed("skullowner", data.getSkullOwner()),
 				Formatter.number("repairprice", data.getRepairPrice()),
 				Formatter.number("antisnipetime", config.getConfig().getInt("antisnipe.time")),
-				Placeholder.unparsed("currencynameplural", economy.currencyNamePlural()),
-				Placeholder.unparsed("currencynamesingular", economy.currencyNameSingular()),
+				Placeholder.unparsed("currencynameplural", Objects.requireNonNullElse(economy.currencyNamePlural(), "")),
+				Placeholder.unparsed("currencynamesingular", Objects.requireNonNullElse(economy.currencyNameSingular(), "")),
 		};
 	}
 
@@ -315,7 +380,7 @@ public class MessageController extends FileHandler {
 				if (inputStream == null)
 					throw new IOException();
 
-				try (Reader reader = new InputStreamReader(inputStream)) {
+				try (Reader reader = new InputStreamReader(inputStream, StandardCharsets.UTF_8)) {
 					ResourceBundle defaultBundle = new PropertyResourceBundle(reader);
 					return defaultBundle.getString(key);
 				}
@@ -326,7 +391,8 @@ public class MessageController extends FileHandler {
 		}
 	}
 
-	private String replaceAuctionPatterns(String raw, AuctionData data) {
+	private String replaceAuctionPatterns(String raw, AuctionData data, @Nullable BidList bidList,
+	                                      boolean revealSealedResult) {
 		String replaced = raw;
 		replaced = replaceAuctionPattern(replaced, HAS_CUSTOM_NAME_PATTERN,
 				!data.getCustomName().equals(data.getMinecraftName()));
@@ -338,7 +404,14 @@ public class MessageController extends FileHandler {
 		replaced = replaceAuctionPattern(replaced, REPAIR_PATTERN, data.getRepairPrice() > 0);
 		replaced = replaceAuctionPattern(replaced, UNREPAIRABLE_PATTERN, data.getRepairPrice() == -1);
 		replaced = replaced.replace("<auctioneeruuid>", data.getAuctioneer().getUniqueId().toString());
-		replaced = replaced.replace("<highestbidderuuid>", data.getAuctioneer().getUniqueId().toString());
+		String highestBidderUniqueId = "";
+		if (bidList != null && (!data.isSealed() || revealSealedResult)) {
+			Bid highestBid = bidList.getHighestBid();
+			if (highestBid != null) {
+				highestBidderUniqueId = highestBid.auctionPlayer().getUniqueId().toString();
+			}
+		}
+		replaced = replaced.replace("<highestbidderuuid>", highestBidderUniqueId);
 		replaced = replaced.replace("<materialtype>", data.getItem().getType().toString().toLowerCase());
 		replaced = replaced.replace("<itemamount>", Integer.toString(data.getAmount()));
 		replaced = replaced.replace("<minecraftname>", data.getMinecraftName());

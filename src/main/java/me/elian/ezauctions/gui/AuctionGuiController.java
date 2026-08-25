@@ -36,6 +36,7 @@ import org.bukkit.boss.BarStyle;
 import org.bukkit.boss.BossBar;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
@@ -246,7 +247,7 @@ public final class AuctionGuiController implements Listener {
 		}
 	}
 
-	@EventHandler
+	@EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
 	public void onAuctionStart(AuctionStartEvent event) {
 		UUID auctionId = event.getAuction().getAuctionData().getId();
 		for (Map.Entry<UUID, Set<UUID>> entry : reminders.entrySet()) {
