@@ -8,6 +8,7 @@ import me.elian.ezauctions.helper.ItemHelper;
 import me.elian.ezauctions.model.Money;
 import me.elian.ezauctions.model.RewardKind;
 import me.elian.ezauctions.model.RewardRecord;
+import me.elian.ezauctions.model.AuctionRecordStatus;
 import me.elian.ezauctions.scheduler.TaskScheduler;
 import net.milkbowl.vault.economy.Economy;
 import net.milkbowl.vault.economy.EconomyResponse;
@@ -55,6 +56,23 @@ public class RewardController {
 			return CompletableFuture.completedFuture(null);
 		}
 		return database.createReward(RewardRecord.money(ownerId, auctionId, kind, amountMinor));
+	}
+
+	public @NotNull CompletableFuture<Boolean> completeAuctionWithRewards(
+			@NotNull UUID auctionId, @Nullable UUID winnerId,
+			long finalPriceMinor, long payoutMinor, long taxMinor,
+			@NotNull String itemDestination, @NotNull String refundStatus,
+			long completedAtMillis, @NotNull Collection<RewardRecord> rewards) {
+		return database.completeAuctionWithRewards(auctionId, winnerId, finalPriceMinor,
+				payoutMinor, taxMinor, itemDestination, refundStatus, completedAtMillis, rewards);
+	}
+
+	public @NotNull CompletableFuture<Boolean> cancelAuctionWithRewards(
+			@NotNull UUID auctionId, @NotNull Collection<AuctionRecordStatus> expected,
+			@NotNull String itemDestination, @NotNull String refundStatus,
+			long completedAtMillis, @NotNull Collection<RewardRecord> rewards) {
+		return database.cancelAuctionWithRewards(auctionId, expected, itemDestination,
+				refundStatus, completedAtMillis, rewards);
 	}
 
 	public @NotNull CompletableFuture<List<RewardRecord>> getRewards(@NotNull UUID ownerId,

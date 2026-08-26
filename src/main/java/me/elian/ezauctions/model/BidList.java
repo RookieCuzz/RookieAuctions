@@ -100,6 +100,14 @@ public class BidList {
 
 	}
 
+	/** Adds an already persisted bid while rebuilding an interrupted auction, without triggering buyout again. */
+	public void restoreBid(Bid bid) {
+		bids.add(bid);
+		if (highestBid == null || bid.amountMinor() > highestBid.amountMinor()) {
+			highestBid = bid;
+		}
+	}
+
 	public boolean playerHasAnyBids(UUID id) {
 		for (Bid bid : bids) {
 			if (bid.auctionPlayer().getUniqueId().equals(id))

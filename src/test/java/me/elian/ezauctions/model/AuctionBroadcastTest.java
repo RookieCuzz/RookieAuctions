@@ -1,8 +1,8 @@
 package me.elian.ezauctions.model;
 
-import be.seeseemelk.mockbukkit.MockBukkit;
-import be.seeseemelk.mockbukkit.ServerMock;
-import be.seeseemelk.mockbukkit.entity.PlayerMock;
+import org.mockbukkit.mockbukkit.MockBukkit;
+import org.mockbukkit.mockbukkit.ServerMock;
+import org.mockbukkit.mockbukkit.entity.PlayerMock;
 import me.elian.ezauctions.InMemoryEconomy;
 import me.elian.ezauctions.Logger;
 import me.elian.ezauctions.RookieAuctions;
@@ -19,7 +19,9 @@ import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import net.milkbowl.vault.Vault;
 import net.milkbowl.vault.economy.Economy;
+import net.milkbowl.vault.economy.EconomyResponse;
 import org.bukkit.Material;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -31,9 +33,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -41,6 +46,8 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 import java.util.logging.Handler;
 import java.util.logging.Level;
@@ -229,8 +236,10 @@ class AuctionBroadcastTest {
 		RewardController failingRewards = new RewardController(database, economy,
 				plugin.getInjector().getInstance(TaskScheduler.class), config, logger) {
 			@Override
-			public CompletableFuture<Void> createItemReward(UUID ownerId, UUID auctionId, ItemStack item,
-			                                                int amount, String world) {
+			public CompletableFuture<Boolean> completeAuctionWithRewards(
+					UUID auctionId, UUID winnerId, long finalPriceMinor, long payoutMinor,
+					long taxMinor, String itemDestination, String refundStatus,
+					long completedAtMillis, Collection<RewardRecord> rewards) {
 				return CompletableFuture.failedFuture(new IllegalStateException("simulated reward failure"));
 			}
 		};
@@ -253,18 +262,135 @@ class AuctionBroadcastTest {
 		};
 		plugin.getLogger().addHandler(handler);
 		try {
-			auction.startAuction(fixture.data(), () -> { });
+			AtomicBoolean advanced = new AtomicBoolean();
+			auction.startAuction(fixture.data(), () -> advanced.set(true));
 			awaitStatus(fixture.data().getId(), AuctionRecordStatus.ACTIVE);
 			server.getScheduler().performTicks(4);
 			drainMessages(seller);
 			auction.end();
 			server.getScheduler().performTicks(6);
 			assertNotNull(failureLog.get());
+			assertFalse(advanced.get(), "a failed durable reward must not advance the session");
+			assertEquals(AuctionRecordStatus.ACTIVE,
+					await(database.getAuctionRecord(fixture.data().getId())).orElseThrow().getStatus());
 			assertTrue(drainMessages(seller).stream()
 					.noneMatch(component -> plain(component).contains("物品已退回领奖箱")));
 		} finally {
 			plugin.getLogger().removeHandler(handler);
 		}
+	}
+
+	@Test
+	void scheduledVenueAuthorizationSupersedesLegacyWorldAndBoundaryFilters() throws Exception {
+		PlayerMock seller = addOnlinePlayer("VenueRuleSeller");
+		PlayerMock bidder = addOnlinePlayer("VenueRuleBidder");
+		AuctionPlayer bidderData = players.getOnlinePlayer(bidder.getUniqueId());
+		assertNotNull(bidderData);
+		economy.setBalance(bidder, 100D);
+
+		AuctionFixture fixture = newAuction(seller, false);
+		fixture.auction().bindScheduledSession("2099-01-01/afternoon", UUID.randomUUID(),
+				(sessionId, player) -> BidAuthorization.Decision.ALLOWED);
+		config.getConfig().set("auctions.blocked-worlds", List.of(bidder.getWorld().getName()));
+		config.getConfig().set("boundary.enabled", true);
+		config.getConfig().set("boundary.world", "legacy-boundary-in-another-world");
+		try {
+			fixture.auction().startAuction(fixture.data(), () -> { });
+			awaitStatus(fixture.data().getId(), AuctionRecordStatus.ACTIVE);
+			assertSuccessfulBid(fixture.auction(), bidder, bidderData, 1_000L);
+			fixture.auction().cancelAuction(false);
+			awaitStatus(fixture.data().getId(), AuctionRecordStatus.CANCELLED);
+		} finally {
+			config.getConfig().set("auctions.blocked-worlds", List.of("example_world"));
+			config.getConfig().set("boundary.enabled", false);
+			config.getConfig().set("boundary.world", "world");
+		}
+	}
+
+	@Test
+	void uncertainVaultWithdrawalCreatesOneDurableMailboxCompensation() throws Exception {
+		PlayerMock seller = addOnlinePlayer("UncertainVaultSeller");
+		PlayerMock bidder = addOnlinePlayer("UncertainVaultBidder");
+		AuctionPlayer bidderData = players.getOnlinePlayer(bidder.getUniqueId());
+		assertNotNull(bidderData);
+
+		InMemoryEconomy debitThenThrow = new InMemoryEconomy() {
+			@Override
+			public EconomyResponse withdrawPlayer(OfflinePlayer player, double amount) {
+				super.withdrawPlayer(player, amount);
+				throw new IllegalStateException("provider failed after debit");
+			}
+		};
+		debitThenThrow.setBalance(bidder, 100D);
+		AuctionFixture fixture = newAuction(seller, false);
+		RewardController rewardController = new RewardController(database, debitThenThrow,
+				plugin.getInjector().getInstance(TaskScheduler.class), config, logger);
+		Auction auction = new Auction(plugin, plugin.getInjector().getInstance(TaskScheduler.class),
+				debitThenThrow, null, players, config,
+				plugin.getInjector().getInstance(MessageController.class),
+				plugin.getInjector().getInstance(ScoreboardController.class), database, rewardController);
+
+		auction.startAuction(fixture.data(), () -> { });
+		awaitStatus(fixture.data().getId(), AuctionRecordStatus.ACTIVE);
+		AuctionView view = auction.viewFor(bidderData);
+		BidOutcome outcome = await(auction.submitBid(bidder, bidderData, view.auctionId(),
+				view.revision(), 1_000L, false));
+		assertEquals(BidOutcome.Status.ECONOMY_FAILED, outcome.status());
+
+		RewardRecord compensation = awaitReward(bidder.getUniqueId(), fixture.data().getId(),
+				RewardKind.REFUND);
+		assertEquals(1_000L, compensation.getMoneyMinor());
+		assertEquals(1, await(database.getBidTransactions(
+				"legacy/" + fixture.data().getId(), List.of(BidTransactionState.COMPENSATED))).size());
+
+		auction.cancelAuction(false);
+		awaitStatus(fixture.data().getId(), AuctionRecordStatus.CANCELLED);
+	}
+
+	@Test
+	void activationFailureDoesNotAdvanceTimerAndRetriesTheDurableCas() throws Exception {
+		PlayerMock seller = addOnlinePlayer("ActivationRetrySeller");
+		AuctionFixture fixture = newAuction(seller, false);
+		AtomicInteger activationAttempts = new AtomicInteger();
+		Database failFirstActivation = (Database) Proxy.newProxyInstance(
+				Database.class.getClassLoader(), new Class<?>[]{Database.class},
+				(proxy, method, arguments) -> {
+					if (method.getName().equals("transitionAuction")
+							&& arguments != null && arguments.length == 3
+							&& arguments[1] == AuctionRecordStatus.QUEUED
+							&& arguments[2] == AuctionRecordStatus.ACTIVE
+							&& activationAttempts.getAndIncrement() == 0) {
+						return CompletableFuture.failedFuture(
+								new IllegalStateException("simulated transient activation failure"));
+					}
+					try {
+						return method.invoke(database, arguments);
+					} catch (InvocationTargetException error) {
+						throw error.getCause();
+					}
+				});
+		RewardController rewardController = new RewardController(failFirstActivation, economy,
+				plugin.getInjector().getInstance(TaskScheduler.class), config, logger);
+		Auction auction = new Auction(plugin, plugin.getInjector().getInstance(TaskScheduler.class),
+				economy, null, players, config,
+				plugin.getInjector().getInstance(MessageController.class),
+				plugin.getInjector().getInstance(ScoreboardController.class), failFirstActivation,
+				rewardController);
+
+		auction.startAuction(fixture.data(), () -> { });
+		awaitCondition(() -> activationAttempts.get() >= 1);
+		server.getScheduler().performTicks(10);
+		assertEquals(60, auction.getRemainingSeconds(),
+				"the lot clock must remain frozen while durable activation is uncertain");
+
+		awaitStatus(fixture.data().getId(), AuctionRecordStatus.ACTIVE);
+		assertTrue(activationAttempts.get() >= 2);
+		server.getScheduler().performTicks(21);
+		assertTrue(auction.getRemainingSeconds() < 60,
+				"the timer starts only after the retry confirms ACTIVE");
+
+		auction.cancelAuction(false);
+		awaitStatus(fixture.data().getId(), AuctionRecordStatus.CANCELLED);
 	}
 
 	private AuctionFixture newAuction(PlayerMock seller, boolean sealed) throws Exception {

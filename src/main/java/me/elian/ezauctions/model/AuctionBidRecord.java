@@ -27,11 +27,20 @@ public class AuctionBidRecord {
 	}
 
 	public AuctionBidRecord(@NotNull UUID auctionId, @NotNull UUID bidderId, long amountMinor) {
-		this.id = UUID.randomUUID().toString();
+		this(UUID.randomUUID(), auctionId, bidderId, amountMinor, System.currentTimeMillis());
+	}
+
+	public AuctionBidRecord(@NotNull UUID id, @NotNull UUID auctionId, @NotNull UUID bidderId,
+	                        long amountMinor, long createdAtMillis) {
+		this.id = id.toString();
 		this.auctionId = auctionId.toString();
 		this.bidderId = bidderId.toString();
 		this.amountMinor = amountMinor;
-		this.createdAtMillis = System.currentTimeMillis();
+		this.createdAtMillis = createdAtMillis;
+	}
+
+	public @NotNull UUID getId() {
+		return UUID.fromString(id);
 	}
 
 	public @NotNull UUID getAuctionId() {

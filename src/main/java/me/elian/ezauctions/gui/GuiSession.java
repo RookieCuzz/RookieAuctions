@@ -19,6 +19,8 @@ final class GuiSession {
 	GuiPage returnPage = GuiPage.CURRENT;
 	AuctionPlayer viewer;
 	UUID selectedAuctionId;
+	String selectedSessionId;
+	boolean selectedSessionRegistered;
 	long selectedRevision;
 	long proposedBidMinor;
 	boolean proposedBuyout;
@@ -31,6 +33,7 @@ final class GuiSession {
 	int visibleTotal;
 	long loadGeneration;
 	final Map<Integer, UUID> visibleEntries = new HashMap<>();
+	final Map<Integer, String> visibleSessions = new HashMap<>();
 
 	boolean isReady() {
 		return viewer != null;

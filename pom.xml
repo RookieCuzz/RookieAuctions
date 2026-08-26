@@ -10,8 +10,7 @@
 
     <properties>
         <revision>0.0.0-SNAPSHOT</revision>
-        <maven.compiler.source>17</maven.compiler.source>
-        <maven.compiler.target>17</maven.compiler.target>
+        <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <adventure.version>4.24.0</adventure.version>
         <adventure-platform.version>4.4.1</adventure-platform.version>
@@ -59,9 +58,9 @@
     <dependencies>
         <!-- Test dependencies that provide Bukkit API classes must appear before the server API dependency. -->
         <dependency>
-            <groupId>com.github.seeseemelk</groupId>
-            <artifactId>MockBukkit-v1.20</artifactId>
-            <version>3.31.0</version>
+            <groupId>org.mockbukkit.mockbukkit</groupId>
+            <artifactId>mockbukkit-v1.21</artifactId>
+            <version>4.45.1</version>
             <scope>test</scope>
         </dependency>
         <!-- Non-MC related dependencies -->
@@ -103,9 +102,9 @@
         </dependency>
         <!-- MC related dependencies -->
         <dependency>
-            <groupId>dev.folia</groupId>
-            <artifactId>folia-api</artifactId>
-            <version>1.20.1-R0.1-SNAPSHOT</version>
+            <groupId>io.papermc.paper</groupId>
+            <artifactId>paper-api</artifactId>
+            <version>1.21.4-R0.1-SNAPSHOT</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
@@ -201,8 +200,7 @@
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.11.0</version>
                 <configuration>
-                    <source>${maven.compiler.source}</source>
-                    <target>${maven.compiler.target}</target>
+                    <release>${maven.compiler.release}</release>
                 </configuration>
             </plugin>
             <plugin>

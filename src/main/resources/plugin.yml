@@ -1,12 +1,11 @@
 main: me.elian.ezauctions.RookieAuctions
 name: RookieAuctions
 version: ${project.version}
-api-version: 1.20
+api-version: '1.21'
 authors: [RookieCuzz, Elian, Silverwolfg11]
 description: A safe, inventory-GUI auction plugin
 softdepend: [Vault, PlaceholderAPI, ViaVersion]
 provides: [ezAuctions]
-folia-supported: true
 
 permissions:
   rookieauctions.*:
@@ -14,14 +13,39 @@ permissions:
     description: All RookieAuctions permissions (legacy aliases remain supported)
     children:
       ezauctions.*: true
+      rookieauctions.session.submit: true
+      rookieauctions.session.join: true
+      rookieauctions.session.leave: true
+      rookieauctions.admin.venue: true
+      rookieauctions.admin.session: true
   rookieauctions.admin:
     default: false
     children:
       ezauctions.admin: true
+      rookieauctions.admin.venue: true
+      rookieauctions.admin.session: true
   rookieauctions.player:
     default: true
     children:
       ezauctions.player: true
+      rookieauctions.session.submit: true
+      rookieauctions.session.join: true
+      rookieauctions.session.leave: true
+  rookieauctions.session.submit:
+    default: true
+    description: Submit lots to an upcoming auction session
+  rookieauctions.session.join:
+    default: true
+    description: Register for and enter an auction session
+  rookieauctions.session.leave:
+    default: true
+    description: Leave immersive auction mode
+  rookieauctions.admin.venue:
+    default: op
+    description: Configure and validate the immersive venue
+  rookieauctions.admin.session:
+    default: op
+    description: Inspect and manage scheduled sessions
   rookieauctions.auction:
     default: true
     children:
@@ -127,6 +151,8 @@ permissions:
       ezauctions.updatemessage: true
       ezauctions.auction.end: true
       ezauctions.auction.update: true
+      rookieauctions.admin.venue: true
+      rookieauctions.admin.session: true
   ezauctions.player:
     default: true
     children:
@@ -141,6 +167,30 @@ permissions:
       ezauctions.auction.ignore.player: true
       ezauctions.auction.scoreboard: true
       ezauctions.auction.queue: true
+      rookieauctions.session.submit: true
+      rookieauctions.session.join: true
+      rookieauctions.session.leave: true
+
+  ezauctions.session.submit:
+    default: false
+    children:
+      rookieauctions.session.submit: true
+  ezauctions.session.join:
+    default: false
+    children:
+      rookieauctions.session.join: true
+  ezauctions.session.leave:
+    default: false
+    children:
+      rookieauctions.session.leave: true
+  ezauctions.admin.venue:
+    default: false
+    children:
+      rookieauctions.admin.venue: true
+  ezauctions.admin.session:
+    default: false
+    children:
+      rookieauctions.admin.session: true
   ezauctions.auction:
     default: true
   ezauctions.auction.start:

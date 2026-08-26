@@ -2,10 +2,10 @@ package me.elian.ezauctions;
 
 import net.milkbowl.vault.Vault;
 import net.milkbowl.vault.economy.Economy;
-import be.seeseemelk.mockbukkit.MockBukkit;
-import be.seeseemelk.mockbukkit.entity.PlayerMock;
-import be.seeseemelk.mockbukkit.ServerMock;
-import be.seeseemelk.mockbukkit.UnimplementedOperationException;
+import org.mockbukkit.mockbukkit.MockBukkit;
+import org.mockbukkit.mockbukkit.entity.PlayerMock;
+import org.mockbukkit.mockbukkit.ServerMock;
+import org.mockbukkit.mockbukkit.exception.UnimplementedOperationException;
 import me.elian.ezauctions.controller.AuctionController;
 import me.elian.ezauctions.controller.AuctionPlayerController;
 import me.elian.ezauctions.controller.ConfigController;
@@ -218,7 +218,8 @@ class RookieAuctionsTest {
 		seller.simulateInventoryClick(seller.getOpenInventory(), ClickType.LEFT, 47);
 		assertPage(seller, GuiPage.WIZARD_ITEM);
 		seller.getInventory().setItem(0, new ItemStack(Material.DIAMOND, 2));
-		seller.simulateInventoryClick(seller.getOpenInventory(), ClickType.LEFT, 81);
+		// MockBukkit v4 exposes the bottom inventory using a linear raw-slot offset.
+		seller.simulateInventoryClick(seller.getOpenInventory(), ClickType.LEFT, 54);
 		assertPage(seller, GuiPage.WIZARD_ITEM);
 		assertEquals(2, seller.getInventory().getItem(0).getAmount(),
 				"Selecting an item must not remove it");

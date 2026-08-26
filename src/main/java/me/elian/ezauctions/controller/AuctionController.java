@@ -8,12 +8,21 @@ import me.elian.ezauctions.data.Database;
 import me.elian.ezauctions.helper.ItemHelper;
 import me.elian.ezauctions.model.Auction;
 import me.elian.ezauctions.model.AuctionBidRecord;
+import me.elian.ezauctions.model.AuctionBidTransaction;
 import me.elian.ezauctions.model.AuctionData;
+import me.elian.ezauctions.model.BidAuthorization;
+import me.elian.ezauctions.model.BidTransactionState;
 import me.elian.ezauctions.model.AuctionPlayer;
 import me.elian.ezauctions.model.AuctionRecord;
 import me.elian.ezauctions.model.AuctionRecordStatus;
+import me.elian.ezauctions.model.AuctionSessionLot;
+import me.elian.ezauctions.model.AuctionSubmissionTransaction;
 import me.elian.ezauctions.model.RewardKind;
+import me.elian.ezauctions.model.RewardRecord;
+import me.elian.ezauctions.model.SubmissionTransactionState;
 import me.elian.ezauctions.scheduler.TaskScheduler;
+import me.elian.ezauctions.session.LotState;
+import me.elian.ezauctions.session.SubmissionResult;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
@@ -22,6 +31,8 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 import java.util.function.UnaryOperator;
 
 @Singleton
@@ -36,9 +47,12 @@ public class AuctionController implements Listener {
 	private final Provider<Auction> auctionProvider;
 	private final Deque<AuctionData> auctionQueue = new ArrayDeque<>();
 	private final Map<UUID, Long> queueCooldown = new HashMap<>();
+	private final CompletableFuture<Void> submissionRecovery;
 
 	private boolean auctionsEnabled = true;
 	private Auction activeAuction;
+	private Runnable scheduledCompletionHook;
+	private Function<AuctionData, CompletableFuture<SubmissionResult>> legacyAuctionRouter;
 	private long lastAuctionEndTimeMillis;
 
 	@Inject
@@ -55,7 +69,21 @@ public class AuctionController implements Listener {
 		this.database = database;
 		this.rewards = rewards;
 		plugin.getServer().getPluginManager().registerEvents(this, plugin);
-		recoverPersistedAuctions();
+		recoverBidTransactions();
+		submissionRecovery = recoverSubmissionTransactions();
+		submissionRecovery.whenComplete((ignored, error) -> {
+			if (error != null) {
+				logger.severe("Submission recovery did not complete; scheduled session bootstrap "
+						+ "will remain fail-closed", asException(error));
+				return;
+			}
+			recoverPersistedAuctions();
+		});
+	}
+
+	/** Completion barrier consumed by the session orchestrator before it counts or locks lots. */
+	public @NotNull CompletableFuture<Void> submissionRecovery() {
+		return submissionRecovery.thenApply(ignored -> null);
 	}
 
 	public synchronized boolean isAuctionsEnabled() {
@@ -162,7 +190,44 @@ public class AuctionController implements Listener {
 	 * @param auctionData the auction data associated with the auction
 	 * @return true if queued, false if executing immediately
 	 */
+	/**
+	 * @deprecated Immersive submissions must use the persistent session reservation service. While
+	 * immersive mode is enabled this compatibility entry point is routed asynchronously through that
+	 * same capacity boundary and never starts or appends to the legacy in-memory queue.
+	 */
+	@Deprecated(since = "3.0", forRemoval = false)
 	public synchronized boolean queueAuction(@NotNull AuctionData auctionData) {
+		if (config.getConfig().getBoolean("immersive.enabled", false)) {
+			Function<AuctionData, CompletableFuture<SubmissionResult>> router = legacyAuctionRouter;
+			if (router == null) {
+				logger.severe("Rejected legacy queueAuction for " + auctionData.getId()
+						+ ": immersive session router is not installed");
+				return true;
+			}
+			try {
+				CompletableFuture<SubmissionResult> routed = router.apply(auctionData);
+				if (routed == null) {
+					logger.severe("Rejected legacy queueAuction for " + auctionData.getId()
+							+ ": immersive session router returned no future");
+					return true;
+				}
+				routed.whenComplete((result, error) -> {
+					if (error != null) {
+						logger.severe("Could not route legacy auction " + auctionData.getId()
+								+ " into an immersive session", asException(error));
+					} else if (result == null || !result.accepted()) {
+						logger.severe("Rejected legacy auction " + auctionData.getId()
+								+ " because no immersive session capacity was available"
+								+ (result == null ? "" : " (" + result.status() + ")"));
+					}
+				});
+			} catch (RuntimeException error) {
+				logger.severe("Could not invoke immersive router for legacy auction "
+						+ auctionData.getId(), error);
+			}
+			// Legacy callers only understand immediate-vs-queued. Routing is durable and asynchronous.
+			return true;
+		}
 		if (hasActiveAuction() || auctionQueue.size() != 0) {
 			auctionQueue.add(auctionData);
 			logItemMessage(auctionData,
@@ -187,26 +252,114 @@ public class AuctionController implements Listener {
 		return false;
 	}
 
+	/** Installs the fail-closed compatibility router owned by the persistent session controller. */
+	public synchronized void installLegacyAuctionRouter(
+			@NotNull Function<AuctionData, CompletableFuture<SubmissionResult>> router) {
+		legacyAuctionRouter = Objects.requireNonNull(router, "router");
+	}
+
+	/** Removes the compatibility router during orderly shutdown. */
+	public synchronized void clearLegacyAuctionRouter() {
+		legacyAuctionRouter = null;
+	}
+
+	/** Starts a single lot controlled by the persistent session orchestrator. */
+	public synchronized boolean startScheduledAuction(@NotNull AuctionData auctionData,
+	                                                  @NotNull Runnable completionHook) {
+		return startScheduledAuction("legacy/" + auctionData.getId(), auctionData.getId(), auctionData,
+				BidAuthorization.DENY_ALL, completionHook);
+	}
+
+	/** Starts a bound session lot with a synchronous, fail-closed bid authorization policy. */
+	public synchronized boolean startScheduledAuction(@NotNull String sessionId, @NotNull UUID lotId,
+	                                                  @NotNull AuctionData auctionData,
+	                                                  @NotNull BidAuthorization authorization,
+	                                                  @NotNull Runnable completionHook) {
+		if (activeAuction != null) {
+			return false;
+		}
+		Auction auction = auctionProvider.get();
+		auction.bindScheduledSession(sessionId, lotId, authorization);
+		activeAuction = auction;
+		scheduledCompletionHook = completionHook;
+		auction.startAuction(auctionData, this::handleAuctionCompleted);
+		logItemMessage(auctionData,
+				"Scheduled auction lot starting. Auctioneer: %s Amount: %d Item: %s NBT: %s");
+		return true;
+	}
+
+	/** Restores a running session lot without charging any bidder a second time. */
+	public synchronized boolean restoreScheduledAuction(@NotNull AuctionData auctionData,
+	                                                    @NotNull List<me.elian.ezauctions.model.Bid> bids,
+	                                                    int remainingSeconds, int antiSnipeRuns,
+	                                                    long restoredRevision,
+	                                                    @NotNull Runnable completionHook) {
+		return restoreScheduledAuction("legacy/" + auctionData.getId(), auctionData.getId(),
+				auctionData, bids, remainingSeconds, antiSnipeRuns, restoredRevision,
+				BidAuthorization.DENY_ALL, completionHook);
+	}
+
+	/** Restores a bound session lot while retaining the same hot-path bid authorization. */
+	public synchronized boolean restoreScheduledAuction(@NotNull String sessionId, @NotNull UUID lotId,
+	                                                    @NotNull AuctionData auctionData,
+	                                                    @NotNull List<me.elian.ezauctions.model.Bid> bids,
+	                                                    int remainingSeconds, int antiSnipeRuns,
+	                                                    long restoredRevision,
+	                                                    @NotNull BidAuthorization authorization,
+	                                                    @NotNull Runnable completionHook) {
+		if (activeAuction != null) {
+			return false;
+		}
+		Auction auction = auctionProvider.get();
+		auction.bindScheduledSession(sessionId, lotId, authorization);
+		activeAuction = auction;
+		scheduledCompletionHook = completionHook;
+		auction.restoreAuction(auctionData, bids, remainingSeconds, antiSnipeRuns,
+				restoredRevision, this::handleAuctionCompleted);
+		return true;
+	}
+
+	/** Suspends only a session-controlled timer so its durable checkpoint can be restored. */
+	public synchronized boolean suspendScheduledAuction() {
+		if (activeAuction == null || scheduledCompletionHook == null) {
+			return false;
+		}
+		activeAuction.suspendForShutdown();
+		activeAuction = null;
+		scheduledCompletionHook = null;
+		return true;
+	}
+
 	public synchronized void shutdown() {
 		for (AuctionData queued : auctionQueue) {
-			rewards.createItemReward(queued.getAuctioneer().getUniqueId(), queued.getId(),
-					queued.getItem(), queued.getAmount(), queued.getWorld());
-			cancelRecord(queued.getId(), "SELLER_MAILBOX", "NONE");
+			cancelQueuedRecord(queued, "SELLER_MAILBOX", "NONE");
 		}
 
 		auctionQueue.clear();
 
 		Auction activeAuction = getActiveAuction();
 		if (activeAuction != null) {
-			activeAuction.cancelAuctionShutdown();
+			if (scheduledCompletionHook != null) {
+				suspendScheduledAuction();
+			} else {
+				activeAuction.cancelAuctionShutdown();
+			}
 		}
 	}
 
 	private void handleAuctionCompleted() {
+		Runnable hook;
 		synchronized (this) {
 			activeAuction = null;
 			lastAuctionEndTimeMillis = System.currentTimeMillis();
-			pullNextAuctionFromQueue();
+			hook = scheduledCompletionHook;
+			scheduledCompletionHook = null;
+			if (hook == null) {
+				pullNextAuctionFromQueue();
+			}
+		}
+		if (hook != null) {
+			hook.run();
 		}
 	}
 
@@ -307,8 +460,7 @@ public class AuctionController implements Listener {
 				continue;
 			}
 			iterator.remove();
-			rewards.createItemReward(ownerId, data.getId(), data.getItem(), data.getAmount(), data.getWorld());
-			cancelRecord(data.getId(), "SELLER_MAILBOX", "NONE");
+			cancelQueuedRecord(data, "SELLER_MAILBOX", "NONE");
 			return data;
 		}
 		return null;
@@ -325,15 +477,152 @@ public class AuctionController implements Listener {
 		return true;
 	}
 
+	private void recoverBidTransactions() {
+		database.getBidTransactions(List.of(BidTransactionState.PREPARED,
+					BidTransactionState.WITHDRAWING, BidTransactionState.WITHDRAWN))
+				.thenAccept(transactions -> transactions.forEach(this::reconcileBidTransaction))
+				.exceptionally(error -> {
+					logger.severe("Could not scan unfinished bid transactions", asException(error));
+					return null;
+				});
+	}
+
+	private @NotNull CompletableFuture<Void> recoverSubmissionTransactions() {
+		List<SubmissionTransactionState> unfinished = List.of(
+				SubmissionTransactionState.PREPARED,
+				SubmissionTransactionState.FEE_WITHDRAWING,
+				SubmissionTransactionState.FEE_WITHDRAWN,
+				SubmissionTransactionState.ITEM_ESCROWING,
+				SubmissionTransactionState.ITEM_ESCROWED,
+				SubmissionTransactionState.FAILED);
+		return database.getSubmissionTransactions(unfinished)
+				.thenCompose(transactions -> {
+					List<CompletableFuture<Void>> recoveries = new ArrayList<>(transactions.size());
+					for (AuctionSubmissionTransaction transaction : transactions) {
+						recoveries.add(reconcileSubmissionTransaction(transaction));
+					}
+					return CompletableFuture.allOf(recoveries.toArray(CompletableFuture[]::new));
+				});
+	}
+
+	private @NotNull CompletableFuture<Void> reconcileSubmissionTransaction(
+			@NotNull AuctionSubmissionTransaction transaction) {
+		SubmissionTransactionState state = transaction.getState();
+		if (state == SubmissionTransactionState.FEE_WITHDRAWING
+				|| state == SubmissionTransactionState.ITEM_ESCROWING) {
+			logger.severe("Recovering uncertain submission transaction " + transaction.getId()
+					+ " for seller " + transaction.getSellerId() + " from " + state
+					+ "; deterministic mailbox compensation will favor preventing player loss");
+		}
+		return database.getAuctionRecord(transaction.getAuctionId()).thenCompose(optional -> {
+			if (optional.isEmpty()) {
+				return CompletableFuture.failedFuture(new IllegalStateException(
+						"Submission journal has no auction record: " + transaction.getId()));
+			}
+			AuctionRecordStatus auctionState = optional.get().getStatus();
+			if (auctionState == AuctionRecordStatus.ACTIVE
+					|| auctionState == AuctionRecordStatus.COMPLETED) {
+				return database.transitionSubmissionTransaction(transaction.getId(), state,
+						SubmissionTransactionState.COMMITTED,
+						"recovered from published auction", System.currentTimeMillis())
+						.thenCompose(changed -> requireRecoveryChange(changed, transaction,
+								"mark published submission committed"));
+			}
+			if (state == SubmissionTransactionState.ITEM_ESCROWED
+					&& (auctionState == AuctionRecordStatus.PREPARING
+					|| auctionState == AuctionRecordStatus.QUEUED)) {
+				return database.commitSubmissionTransaction(transaction.getId(),
+						System.currentTimeMillis()).thenCompose(committed -> requireRecoveryChange(
+						committed, transaction, "commit escrowed submission"));
+			}
+			String reason = "server restarted during submission phase " + state;
+			return database.compensateSubmissionTransaction(transaction.getId(), reason,
+					System.currentTimeMillis()).thenCompose(compensated -> requireRecoveryChange(
+					compensated, transaction, "compensate interrupted submission"));
+		});
+	}
+
+	private static @NotNull CompletableFuture<Void> requireRecoveryChange(
+			Boolean changed, @NotNull AuctionSubmissionTransaction transaction,
+			@NotNull String action) {
+		if (Boolean.TRUE.equals(changed)) {
+			return CompletableFuture.completedFuture(null);
+		}
+		return CompletableFuture.failedFuture(new IllegalStateException(
+				"Could not " + action + " " + transaction.getId() + " because its state changed"));
+	}
+
+	private void reconcileBidTransaction(@NotNull AuctionBidTransaction transaction) {
+		switch (transaction.getState()) {
+			case PREPARED -> database.transitionBidTransaction(transaction.getId(),
+					BidTransactionState.PREPARED, BidTransactionState.FAILED,
+					"server restarted before Vault withdrawal", System.currentTimeMillis())
+					.exceptionally(error -> {
+						logger.severe("Could not close unstarted bid transaction "
+								+ transaction.getId(), asException(error));
+						return false;
+					});
+			case WITHDRAWING -> compensateRecoveredBid(transaction,
+					"uncertain Vault withdrawal interrupted by restart");
+			case WITHDRAWN -> database.getBidRecord(transaction.getId())
+					.whenComplete((bidRecord, error) -> {
+						if (error != null) {
+							logger.severe("Could not inspect bid record for transaction "
+									+ transaction.getId(), asException(error));
+							return;
+						}
+						if (bidRecord.isPresent()) {
+							database.transitionBidTransaction(transaction.getId(),
+									BidTransactionState.WITHDRAWN, BidTransactionState.COMMITTED,
+									"recovered from durable bid record", System.currentTimeMillis())
+									.exceptionally(transitionError -> {
+										logger.severe("Could not commit recovered bid transaction "
+												+ transaction.getId(), asException(transitionError));
+										return false;
+									});
+						} else {
+							compensateRecoveredBid(transaction,
+									"withdrawal persisted without a durable bid record");
+						}
+					});
+			default -> {
+			}
+		}
+	}
+
+	private void compensateRecoveredBid(@NotNull AuctionBidTransaction transaction,
+	                                    @NotNull String reason) {
+		logger.severe("Compensating uncertain bid transaction " + transaction.getId()
+				+ " for player " + transaction.getBidderId() + " (" + reason
+				+ "). A deterministic mailbox refund will be created.");
+		database.compensateBidTransaction(transaction.getId(), reason, System.currentTimeMillis())
+				.whenComplete((compensated, error) -> {
+					if (error != null || !Boolean.TRUE.equals(compensated)) {
+						logger.severe("Could not compensate bid transaction " + transaction.getId(),
+								error == null ? new IllegalStateException("transaction state changed")
+									: asException(error));
+					}
+				});
+	}
+
 	private void recoverPersistedAuctions() {
 		database.getAuctionsByStatus(List.of(AuctionRecordStatus.PREPARING,
 						AuctionRecordStatus.ACTIVE, AuctionRecordStatus.QUEUED))
-				.thenAccept(records -> {
+				.thenCombine(checkpointProtectedAuctionIds(), Map::entry)
+				.thenAccept(recovery -> {
+					List<AuctionRecord> records = recovery.getKey();
+					Set<UUID> checkpointProtected = recovery.getValue();
 					for (AuctionRecord record : records) {
 						switch (record.getStatus()) {
 							case PREPARING -> quarantineInterruptedPreparation(record);
-							case ACTIVE -> recoverInterruptedActiveAuction(record);
-							case QUEUED -> restoreQueuedAuction(record);
+							case ACTIVE -> {
+								if (!checkpointProtected.contains(record.getId())) {
+									recoverInterruptedActiveAuction(record);
+								}
+							}
+							case QUEUED -> {
+								// The persistent session orchestrator migrates and orders queued lots.
+							}
 							default -> {
 							}
 						}
@@ -346,6 +635,50 @@ public class AuctionController implements Listener {
 				});
 	}
 
+	/** Scheduled ACTIVE records are owned by the session recovery path, not legacy refund recovery. */
+	private CompletableFuture<Set<UUID>> checkpointProtectedAuctionIds() {
+		return database.getSessionsByState(List.of(me.elian.ezauctions.session.SessionState.RUNNING))
+				.thenCompose(sessions -> {
+					List<CompletableFuture<Set<UUID>>> lookups = new ArrayList<>();
+					for (me.elian.ezauctions.model.AuctionSessionRecord session : sessions) {
+						CompletableFuture<List<AuctionSessionLot>> sessionLots =
+								database.getSessionLots(session.getId());
+						CompletableFuture<Optional<AuctionSessionLot>> checkpointLot =
+								database.getRuntimeCheckpoint(session.getId()).thenCompose(checkpoint -> {
+									if (checkpoint.isEmpty()
+											|| checkpoint.get().getCurrentLotId() == null) {
+										return CompletableFuture.completedFuture(Optional.empty());
+									}
+									return database.getSessionLot(checkpoint.get().getCurrentLotId());
+								});
+						lookups.add(sessionLots.thenCombine(checkpointLot,
+								AuctionController::protectedAuctionIds));
+					}
+					return CompletableFuture.allOf(lookups.toArray(CompletableFuture[]::new))
+							.thenApply(ignored -> {
+								Set<UUID> protectedIds = new HashSet<>();
+								for (CompletableFuture<Set<UUID>> lookup : lookups) {
+									protectedIds.addAll(lookup.join());
+								}
+								return Set.copyOf(protectedIds);
+							});
+				});
+	}
+
+	static Set<UUID> protectedAuctionIds(@NotNull Collection<AuctionSessionLot> sessionLots,
+	                                      @NotNull Optional<AuctionSessionLot> checkpointLot) {
+		Set<UUID> protectedIds = new HashSet<>();
+		for (AuctionSessionLot lot : sessionLots) {
+			// startScheduledAuction persists the legacy AuctionRecord as ACTIVE before the
+			// first per-second checkpoint. Protect that short no-checkpoint recovery window.
+			if (lot.getState() == LotState.ACTIVE) {
+				protectedIds.add(lot.getAuctionId());
+			}
+		}
+		checkpointLot.map(AuctionSessionLot::getAuctionId).ifPresent(protectedIds::add);
+		return Set.copyOf(protectedIds);
+	}
+
 	private void quarantineInterruptedPreparation(@NotNull AuctionRecord record) {
 		logger.warning("Auction " + record.getId() + " for " + record.getAuctioneerId()
 				+ " was interrupted while moving inventory into escrow. It was cancelled as MANUAL_REVIEW "
@@ -355,24 +688,40 @@ public class AuctionController implements Listener {
 	}
 
 	private void recoverInterruptedActiveAuction(@NotNull AuctionRecord record) {
-		java.util.concurrent.CompletableFuture<Void> itemRecovery;
+		RewardRecord itemRecovery;
 		try {
-			itemRecovery = rewards.createItemReward(record.getAuctioneerId(), record.getId(), record.getItem(),
+			itemRecovery = RewardRecord.item(record.getAuctioneerId(), record.getId(), record.getItem(),
 					record.getAmount(), record.getWorld());
 		} catch (Exception exception) {
 			logger.severe("Could not restore active auction item " + record.getId(), exception);
 			return;
 		}
 
-		itemRecovery.thenCompose(ignored -> database.getBidRecords(record.getId())).thenAccept(bids -> {
+		database.getBidRecords(record.getId()).thenCompose(bids -> {
 			Map<UUID, Long> highestByBidder = new HashMap<>();
 			for (AuctionBidRecord bid : bids) {
 				highestByBidder.merge(bid.getBidderId(), bid.getAmountMinor(), Math::max);
 			}
-			for (Map.Entry<UUID, Long> entry : highestByBidder.entrySet()) {
-				rewards.createMoneyReward(entry.getKey(), record.getId(), RewardKind.REFUND, entry.getValue());
+			List<RewardRecord> recoveryRewards = new ArrayList<>();
+			recoveryRewards.add(itemRecovery);
+			long listingFeeMinor = me.elian.ezauctions.model.Money.fromMajor(
+					config.getConfig().getDouble("auctions.fees.start-price"));
+			if (listingFeeMinor > 0) {
+				highestByBidder.merge(record.getAuctioneerId(), listingFeeMinor, Math::addExact);
 			}
-			database.transitionAuction(record.getId(), AuctionRecordStatus.ACTIVE, AuctionRecordStatus.CANCELLED);
+			for (Map.Entry<UUID, Long> entry : highestByBidder.entrySet()) {
+				if (entry.getValue() > 0) {
+					recoveryRewards.add(RewardRecord.money(entry.getKey(), record.getId(),
+							RewardKind.REFUND, entry.getValue()));
+				}
+			}
+			return rewards.cancelAuctionWithRewards(record.getId(), List.of(AuctionRecordStatus.ACTIVE),
+					"SELLER_MAILBOX", "MAILBOX", System.currentTimeMillis(), recoveryRewards);
+		}).thenAccept(cancelled -> {
+			if (!Boolean.TRUE.equals(cancelled)) {
+				logger.severe("Could not atomically recover active auction " + record.getId()
+						+ " because its lifecycle state changed");
+			}
 		}).exceptionally(error -> {
 			logger.severe("Could not recover active auction " + record.getId(),
 					error instanceof Exception exception ? exception : new RuntimeException(error));
@@ -400,11 +749,22 @@ public class AuctionController implements Listener {
 		});
 	}
 
-	private void cancelRecord(@NotNull UUID auctionId, @NotNull String destination,
-	                          @NotNull String refundStatus) {
-		database.getAuctionRecord(auctionId).thenAccept(optional -> optional.ifPresent(record -> {
-			record.cancel(destination, refundStatus);
-			database.saveAuctionRecord(record);
-		}));
+	private void cancelQueuedRecord(@NotNull AuctionData data, @NotNull String destination,
+	                                @NotNull String refundStatus) {
+		RewardRecord itemReward = RewardRecord.item(data.getAuctioneer().getUniqueId(), data.getId(),
+				data.getItem(), data.getAmount(), data.getWorld());
+		rewards.cancelAuctionWithRewards(data.getId(), List.of(AuctionRecordStatus.QUEUED),
+				destination, refundStatus, System.currentTimeMillis(), List.of(itemReward))
+				.whenComplete((cancelled, error) -> {
+					if (error != null || !Boolean.TRUE.equals(cancelled)) {
+						logger.severe("Could not atomically cancel queued auction " + data.getId(),
+								error == null ? new IllegalStateException("auction state changed")
+									: asException(error));
+					}
+				});
+	}
+
+	private static @NotNull Exception asException(@NotNull Throwable error) {
+		return error instanceof Exception exception ? exception : new RuntimeException(error);
 	}
 }

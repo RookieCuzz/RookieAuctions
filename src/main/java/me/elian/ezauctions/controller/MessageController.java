@@ -180,7 +180,7 @@ public class MessageController extends FileHandler {
 				if (!plugin.isEnabled() || !target.isOnline())
 					return;
 
-				// World and message access must happen on the target's owning region on Folia.
+				// World and message access stays on the target player's server thread.
 				String playerWorld = target.getWorld().getName();
 				if (config.getConfig().getBoolean("auctions.per-world-broadcast")
 						&& world != null && !world.equals(playerWorld))

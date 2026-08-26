@@ -128,13 +128,12 @@ public class AuctionPlayer {
 
 	/**
 	 * Determines whether a value is within two bounds.
+	 * @param value value to check if in between
 	 * @param bound1 first boundary, can be greater than or less than bound2
 	 * @param bound2 second boundary, can be greater than or less than bound1
-	 * @param value value to check if in between
 	 * @return
 	 */
-	private boolean valueWithinRange(double bound1, double bound2, double value) {
-		// bound1 can be greater or less than bound2 so need to check both ways
-		return (value >= bound1 && value <= bound2) || (value >= bound2 && value <= bound1);
+	private boolean valueWithinRange(double value, double bound1, double bound2) {
+		return value >= Math.min(bound1, bound2) && value <= Math.max(bound1, bound2);
 	}
 }

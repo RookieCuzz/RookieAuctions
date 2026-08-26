@@ -10,11 +10,13 @@ import me.elian.ezauctions.controller.AuctionController;
 import me.elian.ezauctions.controller.MessageController;
 import me.elian.ezauctions.controller.ScoreboardController;
 import me.elian.ezauctions.controller.UpdateController;
+import me.elian.ezauctions.controller.session.AuctionSessionController;
 import me.elian.ezauctions.data.Database;
 import me.elian.ezauctions.gui.AuctionGuiController;
+import me.elian.ezauctions.immersive.AttendanceService;
+import me.elian.ezauctions.immersive.ImmersiveAuctionInputListener;
 import me.elian.ezauctions.scheduler.BukkitTaskScheduler;
 import me.elian.ezauctions.scheduler.TaskScheduler;
-import me.elian.ezauctions.scheduler.ThreadedRegionTaskScheduler;
 import net.milkbowl.vault.economy.Economy;
 import net.milkbowl.vault.permission.Permission;
 import org.bukkit.plugin.Plugin;
@@ -37,16 +39,12 @@ public class EzAuctions extends JavaPlugin {
 	private ScoreboardController scoreboardController;
 	private UpdateController updateController;
 	private AuctionGuiController auctionGuiController;
+	private AuctionSessionController auctionSessionController;
+	private ImmersiveAuctionInputListener immersiveInputListener;
 	private Injector injector;
 
 	private static Class<? extends TaskScheduler> getSchedulerType() {
-		try {
-			// EntityScheduler is part of the Paper API too; RegionizedServer only exists on Folia.
-			Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
-			return ThreadedRegionTaskScheduler.class;
-		} catch (ClassNotFoundException e) {
-			return BukkitTaskScheduler.class;
-		}
+		return BukkitTaskScheduler.class;
 	}
 
 	public Injector getInjector() {
@@ -74,6 +72,12 @@ public class EzAuctions extends JavaPlugin {
 		messageController = injector.getInstance(MessageController.class);
 		scoreboardController = injector.getInstance(ScoreboardController.class);
 		auctionGuiController = injector.getInstance(AuctionGuiController.class);
+		auctionSessionController = injector.getInstance(AuctionSessionController.class);
+		AttendanceService attendance = injector.getInstance(AttendanceService.class);
+		immersiveInputListener = new ImmersiveAuctionInputListener(this, scheduler, attendance,
+				auctionGuiController::openBidPanel);
+		auctionSessionController.start();
+		immersiveInputListener.start();
 
 		updateController = injector.getInstance(UpdateController.class);
 		updateController.checkForUpdates();
@@ -86,11 +90,19 @@ public class EzAuctions extends JavaPlugin {
 
 	@Override
 	public void onDisable() {
+		if (immersiveInputListener != null) {
+			immersiveInputListener.shutdown();
+		}
+
 		if (auctionGuiController != null) {
 			auctionGuiController.shutdown();
 		}
 
-		// scheduler must be the first to shut down to ensure no async tasks are created
+		if (auctionSessionController != null) {
+			auctionSessionController.shutdown();
+		}
+
+		// Session state is checkpointed before the shared scheduler is stopped.
 		if (scheduler != null) {
 			scheduler.shutdown();
 		}

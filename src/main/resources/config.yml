@@ -1,6 +1,39 @@
 # RookieAuctions Configuration File #
 #####################################
 
+config-version: 3
+
+# Persistent immersive auction sessions. Venue coordinates are intentionally omitted: use
+# /auction admin venue set <buyer-spawn|item-display|info-display|corner1|corner2>
+# followed by /auction admin venue enable after all five points validate.
+immersive:
+  enabled: false
+  timezone: 'Asia/Shanghai'
+  booking-horizon-sessions: 2
+  capacity-per-session: 16
+  max-lots-per-player-per-session: 2
+  submission-cutoff-seconds: 600
+  lot-duration-seconds: 120
+  intermission-seconds: 10
+  missed-start-grace-seconds: 1800
+  blocked-retry-seconds: 30
+  schedules:
+    afternoon:
+      display-name: '午场'
+      time: '14:00'
+    evening:
+      display-name: '晚场'
+      time: '20:00'
+  venue:
+    item-display:
+      scale: 1.25
+      spin-period-ticks: 80
+    info-display:
+      line-width: 240
+      shadowed: true
+      see-through: false
+      background-color: '#66000000'
+
 data:
   # Out of the box support for MySQL, MariaDB, and SQLite
   # You can add support for Postgres, Microsoft SQL Server, H2, Derby, HSQLDB by including the appropriate drivers
@@ -136,12 +169,12 @@ antisnipe:
   config-version: 2
   enabled: true
   # Trigger only when the remaining time is strictly lower than this value.
-  seconds-for-start: 300
+  seconds-for-start: 30
   # Maximum number of resets during one auction.
   run-times: 3
   # Target remaining seconds. The actual target never exceeds the auction's original duration.
   # Example: setting this to 100 resets an eligible auction to 100 seconds.
-  time: 300
+  time: 30
 
 # Scoreboard for auctions. Auto-updating
 scoreboard:

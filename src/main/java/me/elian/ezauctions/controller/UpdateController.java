@@ -73,7 +73,7 @@ public class UpdateController implements Listener {
 
 	private String getServerMinecraftVersion() {
 		try {
-			// paper/folia supported
+			// Paper/Purpur 1.21.4 supported
 			return (String) plugin.getServer().getClass().getMethod("getMinecraftVersion").invoke(plugin.getServer());
 		} catch (NoSuchMethodException | InvocationTargetException | IllegalAccessException e) {
 			// spigot takes some more work

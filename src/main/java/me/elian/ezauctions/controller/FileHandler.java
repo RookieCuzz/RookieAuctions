@@ -39,6 +39,10 @@ abstract class FileHandler {
 
 	protected abstract void loadFile(@NotNull Reader reader);
 
+	protected final @NotNull Path getPath() {
+		return path;
+	}
+
 	public void reload() throws IOException {
 		try {
 			createFileFromResource();

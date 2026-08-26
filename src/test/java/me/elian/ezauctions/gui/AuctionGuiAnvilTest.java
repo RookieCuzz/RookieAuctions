@@ -1,10 +1,10 @@
 package me.elian.ezauctions.gui;
 
-import be.seeseemelk.mockbukkit.MockBukkit;
-import be.seeseemelk.mockbukkit.ServerMock;
-import be.seeseemelk.mockbukkit.UnimplementedOperationException;
-import be.seeseemelk.mockbukkit.entity.PlayerMock;
-import be.seeseemelk.mockbukkit.inventory.AnvilInventoryMock;
+import org.mockbukkit.mockbukkit.MockBukkit;
+import org.mockbukkit.mockbukkit.ServerMock;
+import org.mockbukkit.mockbukkit.exception.UnimplementedOperationException;
+import org.mockbukkit.mockbukkit.entity.PlayerMock;
+import org.mockbukkit.mockbukkit.inventory.AnvilInventoryMock;
 import me.elian.ezauctions.InMemoryEconomy;
 import me.elian.ezauctions.RookieAuctions;
 import me.elian.ezauctions.controller.AuctionController;
@@ -14,7 +14,9 @@ import org.bukkit.Material;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.PrepareAnvilEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.view.AnvilView;
 import org.bukkit.plugin.ServicePriority;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -23,6 +25,9 @@ import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -194,7 +199,7 @@ class AuctionGuiAnvilTest {
 		player.simulateInventoryClick(47);
 		assertPage(player, GuiPage.WIZARD_ITEM);
 		player.getInventory().setItem(0, new ItemStack(Material.DIAMOND));
-		player.simulateInventoryClick(player.getOpenInventory(), ClickType.LEFT, 81);
+		player.simulateInventoryClick(player.getOpenInventory(), ClickType.LEFT, 54);
 		player.simulateInventoryClick(44);
 		assertPage(player, GuiPage.WIZARD_MODE);
 	}
@@ -224,11 +229,42 @@ class AuctionGuiAnvilTest {
 		AnvilInventoryMock anvil = assertInstanceOf(AnvilInventoryMock.class,
 				player.getOpenInventory().getTopInventory());
 		anvil.setRenameText(renameText);
-		PrepareAnvilEvent event = new PrepareAnvilEvent(player.getOpenInventory(), null);
+		AnvilView view = anvilView(player.getOpenInventory(), anvil);
+		PrepareAnvilEvent event = new PrepareAnvilEvent(view, null);
 		gui.onPrepareAnvil(event);
 		ItemStack result = event.getResult();
 		assertNotNull(result);
 		return result;
+	}
+
+	/**
+	 * MockBukkit 4 exposes an {@link AnvilInventoryMock} as the top inventory, but its
+	 * open view is still the generic {@link InventoryView}. Paper 1.21 requires an
+	 * {@link AnvilView} when constructing {@link PrepareAnvilEvent}, so adapt the two
+	 * test doubles until MockBukkit supplies a specialised view implementation.
+	 */
+	private AnvilView anvilView(InventoryView delegate, AnvilInventoryMock anvil) {
+		return (AnvilView) Proxy.newProxyInstance(
+				AnvilView.class.getClassLoader(),
+				new Class<?>[]{AnvilView.class},
+				(proxy, method, args) -> invokeViewMethod(delegate, anvil, method, args));
+	}
+
+	private Object invokeViewMethod(InventoryView delegate, AnvilInventoryMock anvil,
+	                                Method method, Object[] args) throws Throwable {
+		try {
+			Method inventoryMethod = anvil.getClass().getMethod(method.getName(), method.getParameterTypes());
+			return inventoryMethod.invoke(anvil, args);
+		} catch (NoSuchMethodException ignored) {
+			try {
+				Method viewMethod = delegate.getClass().getMethod(method.getName(), method.getParameterTypes());
+				return viewMethod.invoke(delegate, args);
+			} catch (InvocationTargetException exception) {
+				throw exception.getCause();
+			}
+		} catch (InvocationTargetException exception) {
+			throw exception.getCause();
+		}
 	}
 
 	private void setDisplayName(ItemStack item, String name) {

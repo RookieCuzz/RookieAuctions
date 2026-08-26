@@ -82,6 +82,17 @@ public class RewardRecord {
 		return reward;
 	}
 
+	/** A transaction-scoped refund that remains idempotent across recovery retries. */
+	public static @NotNull RewardRecord bidCompensation(@NotNull UUID ownerId,
+	                                                    @NotNull UUID auctionId,
+	                                                    @NotNull UUID transactionId,
+	                                                    long moneyMinor) {
+		RewardRecord reward = money(ownerId, auctionId, RewardKind.REFUND, moneyMinor);
+		reward.id = UUID.nameUUIDFromBytes(("ezAuctions:bid-compensation:" + transactionId)
+				.getBytes(StandardCharsets.UTF_8)).toString();
+		return reward;
+	}
+
 	private static @NotNull RewardRecord base(@NotNull UUID ownerId, @Nullable UUID auctionId,
 	                                          @NotNull RewardKind kind) {
 		RewardRecord reward = new RewardRecord();

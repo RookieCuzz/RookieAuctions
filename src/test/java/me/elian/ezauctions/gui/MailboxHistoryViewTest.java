@@ -1,6 +1,6 @@
 package me.elian.ezauctions.gui;
 
-import be.seeseemelk.mockbukkit.MockBukkit;
+import org.mockbukkit.mockbukkit.MockBukkit;
 import me.elian.ezauctions.model.RewardKind;
 import me.elian.ezauctions.model.RewardRecord;
 import me.elian.ezauctions.model.RewardState;

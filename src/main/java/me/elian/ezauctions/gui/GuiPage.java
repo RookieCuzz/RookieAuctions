@@ -2,6 +2,7 @@ package me.elian.ezauctions.gui;
 
 public enum GuiPage {
 	CURRENT,
+	BID_PANEL,
 	BID_CONFIRM,
 	QUEUE,
 	QUEUE_DETAIL,
