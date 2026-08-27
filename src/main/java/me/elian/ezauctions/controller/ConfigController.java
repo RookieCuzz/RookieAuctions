@@ -53,6 +53,11 @@ public class ConfigController extends FileHandler {
 		return fileConfiguration;
 	}
 
+	public synchronized void reloadConfiguration() throws IOException {
+		reload();
+		mergeDefaultsAndMigrate();
+	}
+
 	public boolean isAntiSnipeConfigCurrent() {
 		return fileConfiguration != null
 				&& fileConfiguration.getInt("antisnipe.config-version", 0) >= ANTI_SNIPE_CONFIG_VERSION;

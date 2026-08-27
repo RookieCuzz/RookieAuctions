@@ -13,6 +13,7 @@ import me.elian.ezauctions.controller.UpdateController;
 import me.elian.ezauctions.controller.session.AuctionSessionController;
 import me.elian.ezauctions.data.Database;
 import me.elian.ezauctions.gui.AuctionGuiController;
+import me.elian.ezauctions.immersive.AuctioneerNpcFeedback;
 import me.elian.ezauctions.immersive.AttendanceService;
 import me.elian.ezauctions.immersive.ImmersiveAuctionInputListener;
 import me.elian.ezauctions.scheduler.BukkitTaskScheduler;
@@ -41,6 +42,7 @@ public class EzAuctions extends JavaPlugin {
 	private AuctionGuiController auctionGuiController;
 	private AuctionSessionController auctionSessionController;
 	private ImmersiveAuctionInputListener immersiveInputListener;
+	private AuctioneerNpcFeedback auctioneerNpcFeedback;
 	private Injector injector;
 
 	private static Class<? extends TaskScheduler> getSchedulerType() {
@@ -76,6 +78,8 @@ public class EzAuctions extends JavaPlugin {
 		AttendanceService attendance = injector.getInstance(AttendanceService.class);
 		immersiveInputListener = new ImmersiveAuctionInputListener(this, scheduler, attendance,
 				auctionGuiController::openBidPanel);
+		auctioneerNpcFeedback = injector.getInstance(AuctioneerNpcFeedback.class);
+		auctioneerNpcFeedback.start();
 		auctionSessionController.start();
 		immersiveInputListener.start();
 

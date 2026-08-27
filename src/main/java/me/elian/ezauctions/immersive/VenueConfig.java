@@ -88,7 +88,58 @@ public final class VenueConfig {
 	}
 
 	public synchronized int itemSpinPeriodTicks() {
-		return Math.max(20, config().getInt(ROOT + "item-display.spin-period-ticks", 80));
+		return normalizeSpinPeriodTicks(config().getInt(ROOT + "item-display.spin-period-ticks", 120));
+	}
+
+	static int normalizeSpinPeriodTicks(int configured) {
+		return Math.max(1, configured);
+	}
+	public synchronized int itemBlockLight() {
+		return configuredBrightness(ROOT + "item-display.brightness.block-light", 15);
+	}
+
+	public synchronized int itemSkyLight() {
+		return configuredBrightness(ROOT + "item-display.brightness.sky-light", 15);
+	}
+
+	public synchronized boolean itemHaloEnabled() {
+		return config().getBoolean(ROOT + "item-display.halo.enabled", true);
+	}
+
+	public synchronized double itemHaloRadius() {
+		return clamp(config().getDouble(ROOT + "item-display.halo.radius", 0.45D), 0.05D, 3D, 0.45D);
+	}
+
+	public synchronized double itemHaloHeight() {
+		return clamp(config().getDouble(ROOT + "item-display.halo.height", -0.60D), -2D, 0.5D, -0.60D);
+	}
+
+	public synchronized int itemHaloParticleCount() {
+			return Math.max(0, Math.min(32, config().getInt(ROOT + "item-display.halo.particle-count", 10)));
+	}
+
+	public synchronized int itemHaloIntervalTicks() {
+		return Math.max(1, Math.min(40, config().getInt(ROOT + "item-display.halo.interval-ticks", 4)));
+	}
+
+	public synchronized @NotNull Color itemHaloColor() {
+		return configuredRgbColor(ROOT + "item-display.halo.color", Color.fromRGB(255, 243, 166));
+	}
+
+	public synchronized float itemHaloSize() {
+		return (float) clamp(config().getDouble(ROOT + "item-display.halo.size", 0.75D), 0.1D, 4D, 0.75D);
+	}
+
+	public synchronized float infoDisplayScale() {
+		return (float) clamp(config().getDouble(ROOT + "info-display.scale", 1D), 0.05D, 4D, 1D);
+	}
+
+	public synchronized int infoBlockLight() {
+		return configuredBrightness(ROOT + "info-display.brightness.block-light", 15);
+	}
+
+	public synchronized int infoSkyLight() {
+		return configuredBrightness(ROOT + "info-display.brightness.sky-light", 15);
 	}
 
 	public synchronized int infoLineWidth() {
@@ -237,6 +288,35 @@ public final class VenueConfig {
 
 	private double configuredItemDisplayScale() {
 		return config().getDouble(ROOT + "item-display.scale", 1.25D);
+	}
+	private int configuredBrightness(String path, int fallback) {
+		return Math.max(0, Math.min(15, config().getInt(path, fallback)));
+	}
+
+	private @NotNull Color configuredRgbColor(String path, @NotNull Color fallback) {
+		String configured = config().getString(path);
+		if (configured == null) {
+			return fallback;
+		}
+		try {
+			String value = configured.trim();
+			if (value.startsWith("#")) {
+				value = value.substring(1);
+			}
+			if (value.length() == 8) {
+				value = value.substring(2);
+			}
+			if (value.length() != 6) {
+				return fallback;
+			}
+			return Color.fromRGB(Integer.parseUnsignedInt(value, 16));
+		} catch (IllegalArgumentException ignored) {
+			return fallback;
+		}
+	}
+
+	private double clamp(double value, double minimum, double maximum, double fallback) {
+		return Double.isFinite(value) ? Math.max(minimum, Math.min(maximum, value)) : fallback;
 	}
 
 	private void saveOrReload() throws IOException {

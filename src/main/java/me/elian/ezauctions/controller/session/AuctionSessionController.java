@@ -213,6 +213,63 @@ public final class AuctionSessionController implements AttendanceSessionPolicy, 
 		requestMaintenance();
 	}
 
+	/**
+	 * Starts the earliest persisted session with available lots, bypassing only its scheduled time.
+	 * Venue validation, bootstrap recovery, active-auction checks and session CAS remain enforced.
+	 */
+	public @NotNull CompletableFuture<ForceStartResult> forceStartNextSession() {
+		if (!started.get()) {
+			return CompletableFuture.completedFuture(ForceStartResult.rejected(
+				"RookieAuctions is not started."));
+		}
+		if (!bootstrapComplete.get()) {
+			return CompletableFuture.completedFuture(ForceStartResult.rejected(
+				"Auction session recovery is still in progress."));
+		}
+		if (activeRuntime != null || auctions.hasActiveAuction()) {
+			return CompletableFuture.completedFuture(ForceStartResult.rejected(
+				"Another auction is already active."));
+		}
+		if (!venueConfig.isReady()) {
+			return CompletableFuture.completedFuture(ForceStartResult.rejected(
+				"The immersive venue is not enabled or valid."));
+		}
+		List<SessionState> states = List.of(SessionState.RUNNING, SessionState.OPEN,
+				SessionState.LOCKED, SessionState.WAITING, SessionState.BLOCKED);
+		return database.getSessionsByState(states).thenCompose(records -> {
+				List<AuctionSessionRecord> ordered = new ArrayList<>(records);
+				ordered.sort(Comparator.comparingLong(AuctionSessionRecord::getScheduledStartMillis));
+				if (ordered.stream().anyMatch(record -> record.getState() == SessionState.RUNNING)) {
+					return CompletableFuture.completedFuture(ForceStartResult.rejected(
+						"A persisted RUNNING session must be recovered first."));
+				}
+				return forceStartCandidates(ordered, 0);
+		});
+	}
+
+	private CompletableFuture<ForceStartResult> forceStartCandidates(
+			List<AuctionSessionRecord> candidates, int index) {
+		if (index >= candidates.size()) {
+			return CompletableFuture.completedFuture(ForceStartResult.rejected(
+				"No eligible auction session with available lots was found."));
+		}
+		AuctionSessionRecord session = candidates.get(index);
+		return database.getSessionLots(session.getId()).thenCompose(allLots -> {
+				List<AuctionSessionLot> lots = occupiedLots(allLots);
+				if (lots.isEmpty()) {
+					return forceStartCandidates(candidates, index + 1);
+				}
+				return beginSession(session, lots, clock.instant()).thenApply(ignored -> {
+					RuntimeSession runtime = activeRuntime;
+					if (runtime != null && runtime.record.getId().equals(session.getId())) {
+						return ForceStartResult.started(session.getId());
+					}
+					return ForceStartResult.rejected(
+							"The selected session was claimed by another scheduler task.");
+				});
+		});
+	}
+
 	/** Backwards-readable alias for venue administration integrations. */
 	public void retryBlockedNow() {
 		requestImmediateMaintenance();
@@ -1810,6 +1867,16 @@ public final class AuctionSessionController implements AttendanceSessionPolicy, 
 	}
 
 	private record KnownSession(SessionState state, long scheduledStartMillis, long lockAtMillis) {
+	}
+
+	public record ForceStartResult(boolean started, String sessionId, String message) {
+		public static ForceStartResult started(String sessionId) {
+			return new ForceStartResult(true, sessionId, "Forced auction session " + sessionId + " to start.");
+		}
+
+		public static ForceStartResult rejected(String message) {
+			return new ForceStartResult(false, null, message);
+		}
 	}
 
 	private record RecoveryBundle(List<AuctionSessionLot> lots,

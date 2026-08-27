@@ -437,6 +437,13 @@ class AttendanceServiceRaceTest {
 		                                                     long intervalSeconds) {
 			return () -> { };
 		}
+
+		@Override
+		public CancellableTask runSyncRepeatingTickTask(Plugin plugin, Runnable runnable,
+		                                                         long initialDelayTicks,
+		                                                         long intervalTicks) {
+			return () -> { };
+		}
 	}
 
 	private static final class SilentLogger implements Logger {

@@ -10,6 +10,7 @@ import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.Particle;
 import org.bukkit.NamespacedKey;
 import org.bukkit.World;
 import org.bukkit.entity.Display;
@@ -37,26 +38,34 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class VenueDisplayController implements Listener {
 	private static final String ITEM_ROLE = "item";
 	private static final String INFO_ROLE = "info";
+	static final long PREVIEW_DEAL_DELAY_SECONDS = 5L;
+	static final long PREVIEW_DURATION_SECONDS = 10L;
 	private final Plugin plugin;
 	private final TaskScheduler scheduler;
 	private final VenueConfig venueConfig;
+	private final AuctioneerNpcFeedback auctioneerNpcFeedback;
 	private final Logger logger;
 	private final NamespacedKey roleKey;
 	private final AtomicReference<VenueDisplayState> latest = new AtomicReference<>();
 	private final AtomicLong updateRevision = new AtomicLong();
 	private final AtomicBoolean started = new AtomicBoolean();
-	private volatile boolean previewWhileDisabled;
+	private final PreviewWindow previewWindow = new PreviewWindow();
 	private volatile ItemDisplay itemDisplay;
 	private volatile TextDisplay infoDisplay;
 	private volatile CancellableTask rotationTask;
+	private volatile CancellableTask previewCountdownTask;
 	private float spinDegrees;
+	private long haloTick;
 
 	@Inject
 	public VenueDisplayController(@NotNull Plugin plugin, @NotNull TaskScheduler scheduler,
-	                              @NotNull VenueConfig venueConfig, @NotNull Logger logger) {
+	                              @NotNull VenueConfig venueConfig,
+	                              @NotNull AuctioneerNpcFeedback auctioneerNpcFeedback,
+	                              @NotNull Logger logger) {
 		this.plugin = plugin;
 		this.scheduler = scheduler;
 		this.venueConfig = venueConfig;
+		this.auctioneerNpcFeedback = auctioneerNpcFeedback;
 		this.logger = logger;
 		this.roleKey = new NamespacedKey(plugin, "immersive-venue-display");
 	}
@@ -71,22 +80,36 @@ public final class VenueDisplayController implements Listener {
 			cleanupOrphansNow();
 			VenueDisplayState state = latest.get();
 			if (state != null) {
-				renderNow(state, previewWhileDisabled);
+				renderNow(state, previewWindow.active());
 			}
 		});
-		rotationTask = scheduler.runSyncRepeatingTask(plugin, this::rotateNow, 1L, 1L);
+		rotationTask = scheduler.runSyncRepeatingTickTask(plugin, this::rotateNow, 1L, 1L);
 	}
 
 	/** Shows live state only while immersive mode is enabled and the venue remains valid. */
 	public void update(@NotNull VenueDisplayState state) {
-		previewWhileDisabled = false;
-		queueRender(state, false);
+		if (!previewWindow.updateLive(state)) {
+			queueRender(state, false);
+		}
 	}
 
-	/** Admin preview works before enable, but still requires a fully valid venue. */
+	/** Admin preview remains pinned for ten seconds, even while live session updates continue. */
 	public void preview(@NotNull VenueDisplayState state) {
-		previewWhileDisabled = true;
+		CancellableTask previousCountdownTask = previewCountdownTask;
+		previewCountdownTask = null;
+		if (previousCountdownTask != null) {
+			previousCountdownTask.cancel();
+		}
+		long previewRevision = previewWindow.begin(state);
 		queueRender(state, true);
+		previewCountdownTask = scheduler.runSyncRepeatingTask(plugin,
+				() -> tickPreview(previewRevision), 1L, 1L);
+		scheduler.runAsyncDelayedTask(
+				() -> scheduler.runSyncTask(() -> triggerPreviewDeal(previewRevision)),
+				PREVIEW_DEAL_DELAY_SECONDS);
+		scheduler.runAsyncDelayedTask(
+				() -> scheduler.runSyncTask(() -> finishPreview(previewRevision)),
+				PREVIEW_DURATION_SECONDS);
 	}
 
 	public void preview() {
@@ -96,10 +119,23 @@ public final class VenueDisplayController implements Listener {
 	}
 
 	public void clear() {
+		CancellableTask countdownTask = previewCountdownTask;
+		previewCountdownTask = null;
+		if (countdownTask != null) {
+			countdownTask.cancel();
+		}
+		previewWindow.clear();
 		latest.set(null);
-		previewWhileDisabled = false;
 		updateRevision.incrementAndGet();
 		scheduler.runSyncTask(this::removeOwnedDisplaysNow);
+	}
+
+	/** Re-renders the current display state so changed styling is visible without a restart. */
+	public void refresh() {
+		VenueDisplayState state = latest.get();
+		if (state != null) {
+			queueRender(state, previewWindow.active());
+		}
 	}
 
 	/** Removes duplicate/crash-left entities in loaded chunks and forgets stale references. */
@@ -116,8 +152,13 @@ public final class VenueDisplayController implements Listener {
 		if (task != null) {
 			task.cancel();
 		}
+		CancellableTask countdownTask = previewCountdownTask;
+		previewCountdownTask = null;
+		if (countdownTask != null) {
+			countdownTask.cancel();
+		}
+		previewWindow.clear();
 		latest.set(null);
-		previewWhileDisabled = false;
 		HandlerList.unregisterAll(this);
 		// Plugin disable normally runs on the primary thread. Remove immediately there so
 		// the scheduler shutdown that follows cannot cancel the cleanup task first.
@@ -154,6 +195,39 @@ public final class VenueDisplayController implements Listener {
 		});
 	}
 
+	private void triggerPreviewDeal(long previewRevision) {
+		if (previewWindow.isCurrent(previewRevision)) {
+			auctioneerNpcFeedback.signalDeal();
+		}
+	}
+
+	private void tickPreview(long previewRevision) {
+		VenueDisplayState state = previewWindow.advance(previewRevision);
+		if (state != null) {
+			queueRender(state, true);
+		}
+	}
+
+	private void finishPreview(long previewRevision) {
+		PreviewExpiration expiration = previewWindow.expire(previewRevision);
+		if (!expiration.applied()) {
+			return;
+		}
+		CancellableTask countdownTask = previewCountdownTask;
+		previewCountdownTask = null;
+		if (countdownTask != null) {
+			countdownTask.cancel();
+		}
+		VenueDisplayState restored = expiration.restoredState();
+		if (restored != null) {
+			queueRender(restored, false);
+			return;
+		}
+		latest.set(null);
+		updateRevision.incrementAndGet();
+		removeOwnedDisplaysNow();
+	}
+
 	private void renderNow(VenueDisplayState state, boolean allowDisabled) {
 		if (!allowDisabled && !venueConfig.isEnabled()) {
 			removeOwnedDisplaysNow();
@@ -177,6 +251,9 @@ public final class VenueDisplayController implements Listener {
 
 		itemEntity.setItemStack(state.item());
 		applyItemScale(itemEntity, layout.itemScale());
+		applyBrightness(itemEntity, venueConfig.itemBlockLight(), venueConfig.itemSkyLight());
+		applyTextScale(infoEntity, venueConfig.infoDisplayScale());
+		applyBrightness(infoEntity, venueConfig.infoBlockLight(), venueConfig.infoSkyLight());
 		infoEntity.setLineWidth(venueConfig.infoLineWidth());
 		infoEntity.setShadowed(venueConfig.infoShadowed());
 		infoEntity.setSeeThrough(venueConfig.infoSeeThrough());
@@ -206,8 +283,9 @@ public final class VenueDisplayController implements Listener {
 		World world = Objects.requireNonNull(location.getWorld(), "item display world");
 		ItemDisplay display = world.spawn(location, ItemDisplay.class);
 		configureBase(display, ITEM_ROLE);
-		display.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.FIXED);
-		display.setInterpolationDuration(20);
+		display.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.GROUND);
+		display.setBillboard(Display.Billboard.FIXED);
+		display.setInterpolationDuration(4);
 		display.setInterpolationDelay(0);
 		display.setViewRange(1.5F);
 		return display;
@@ -238,17 +316,27 @@ public final class VenueDisplayController implements Listener {
 		display.setTransformation(transformation);
 	}
 
+	private void applyTextScale(TextDisplay display, float scale) {
+		Transformation transformation = display.getTransformation();
+		transformation.getScale().set(scale, scale, scale);
+		display.setTransformation(transformation);
+	}
+
+	private void applyBrightness(Display display, int blockLight, int skyLight) {
+		display.setBrightness(new Display.Brightness(blockLight, skyLight));
+	}
+
 	private void rotateNow() {
 		if (!started.get()) {
 			return;
 		}
 		VenueDisplayState state = latest.get();
-		if (state == null || (!previewWhileDisabled && !venueConfig.isEnabled())) {
+		if (state == null || (!previewWindow.active() && !venueConfig.isEnabled())) {
 			return;
 		}
 		ItemDisplay display = itemDisplay;
 		if (display == null || !display.isValid() || display.isDead()) {
-			renderNow(state, previewWhileDisabled);
+			renderNow(state, previewWindow.active());
 			display = itemDisplay;
 		}
 		if (display == null || !display.isValid()) {
@@ -260,10 +348,114 @@ public final class VenueDisplayController implements Listener {
 		Location configured = venueConfig.resolve().resolvedLayout()
 				.map(VenueLayout::itemDisplay).orElse(display.getLocation());
 		display.setRotation(configured.getYaw() + spinDegrees, configured.getPitch());
+		if (venueConfig.itemHaloEnabled()) {
+			int interval = venueConfig.itemHaloIntervalTicks();
+			if (++haloTick % interval == 0L) {
+				spawnItemHalo(display);
+			}
+		} else {
+			haloTick = 0L;
+		}
 	}
 
 	static float degreesPerTick(int periodTicks) {
 		return 360F / Math.max(1, periodTicks);
+	}
+
+	static final class PreviewWindow {
+		private VenueDisplayState liveState;
+		private VenueDisplayState previewState;
+		private long revision;
+		private long elapsedSeconds;
+
+		synchronized boolean updateLive(@NotNull VenueDisplayState state) {
+			liveState = Objects.requireNonNull(state, "state");
+			return previewState != null;
+		}
+
+		synchronized long begin(@NotNull VenueDisplayState state) {
+			previewState = Objects.requireNonNull(state, "state");
+			elapsedSeconds = 0L;
+			return ++revision;
+		}
+
+		synchronized VenueDisplayState advance(long expectedRevision) {
+			if (!isCurrent(expectedRevision)) {
+				return null;
+			}
+			elapsedSeconds++;
+			return withElapsedCountdown(previewState, elapsedSeconds);
+		}
+
+		synchronized boolean isCurrent(long expectedRevision) {
+			return previewState != null && revision == expectedRevision;
+		}
+
+		synchronized PreviewExpiration expire(long expectedRevision) {
+			if (!isCurrent(expectedRevision)) {
+				return new PreviewExpiration(false, null);
+			}
+			previewState = null;
+			return new PreviewExpiration(true, liveState);
+		}
+
+		synchronized boolean active() {
+			return previewState != null;
+		}
+
+		synchronized @NotNull VenueDisplayState current() {
+			return Objects.requireNonNull(previewState != null ? previewState : liveState,
+					"No venue display state is available");
+		}
+
+		synchronized void clear() {
+			liveState = null;
+			previewState = null;
+			elapsedSeconds = 0L;
+			revision++;
+		}
+
+		private static VenueDisplayState withElapsedCountdown(VenueDisplayState state,
+		                                                     long elapsedSeconds) {
+			return new VenueDisplayState(state.phase(), state.sessionLabel(), state.lotNumber(),
+					state.lotCount(), state.item(), state.itemName(),
+					decrement(state.lotRemainingSeconds(), elapsedSeconds), state.currentBidText(),
+					state.sealed(), decrement(state.sessionRemainingSeconds(), elapsedSeconds),
+					decrement(state.phaseRemainingSeconds(), elapsedSeconds), state.nextSessionText(),
+					state.submittedLots(), state.capacity());
+		}
+
+		private static int decrement(int seconds, long elapsedSeconds) {
+			if (seconds < 0) {
+				return seconds;
+			}
+			return (int) Math.max(0L, (long) seconds - elapsedSeconds);
+		}
+	}
+
+	record PreviewExpiration(boolean applied, VenueDisplayState restoredState) {
+	}
+
+	private void spawnItemHalo(ItemDisplay display) {
+		Location center = display.getLocation();
+		World world = center.getWorld();
+		if (world == null) {
+			return;
+		}
+		int count = venueConfig.itemHaloParticleCount();
+		if (count <= 0) {
+			return;
+		}
+		double radius = venueConfig.itemHaloRadius();
+		double height = venueConfig.itemHaloHeight();
+		Particle.DustOptions dust = new Particle.DustOptions(
+				venueConfig.itemHaloColor(), venueConfig.itemHaloSize());
+		for (int index = 0; index < count; index++) {
+			double angle = (Math.PI * 2D * index / count) + Math.toRadians(spinDegrees);
+			Location point = center.clone().add(Math.cos(angle) * radius, height,
+					Math.sin(angle) * radius);
+			world.spawnParticle(Particle.DUST, point, 1, 0D, 0D, 0D, 0D, dust);
+		}
 	}
 
 	private boolean usableAt(Entity entity, Location expected) {
@@ -293,6 +485,7 @@ public final class VenueDisplayController implements Listener {
 		}
 		itemDisplay = null;
 		infoDisplay = null;
+		haloTick = 0L;
 	}
 
 	private void removeOwnedDisplaysNow() {
@@ -300,6 +493,7 @@ public final class VenueDisplayController implements Listener {
 		remove(infoDisplay);
 		itemDisplay = null;
 		infoDisplay = null;
+		haloTick = 0L;
 	}
 
 	private void remove(Entity entity) {

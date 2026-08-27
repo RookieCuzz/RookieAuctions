@@ -96,6 +96,10 @@ public class MessageController extends FileHandler {
 		sendComponentToSender(target, message);
 	}
 
+	public synchronized void reloadMessages() throws IOException {
+		reload();
+	}
+
 	public void sendAuctionMessage(@Nullable CommandSender target, @NotNull String key, @NotNull Auction auction,
 	                               @Nullable TagResolver... resolvers) {
 		if (target == null)

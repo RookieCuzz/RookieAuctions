@@ -24,15 +24,46 @@ immersive:
     evening:
       display-name: '晚场'
       time: '20:00'
+  # Runs only after a scheduled immersive lot has been durably sold.
+  auctioneer-feedback:
+    enabled: true
+    npc-id: 'auctioneer'
+    animation:
+      id: 'deal'
+      speed: 1.0
+      priority: 10
+      lerp-in-ticks: 2
+      lerp-out-ticks: 4
+    sound:
+      enabled: true
+      interval-ticks: 8
+      volume: 1.1
+      first-pitch: 0.95
+      second-pitch: 1.05
   venue:
     item-display:
       scale: 1.25
-      spin-period-ticks: 80
+      spin-period-ticks: 120
+      brightness:
+        block-light: 15
+        sky-light: 15
+      halo:
+        enabled: true
+        radius: 0.45
+        height: -0.60
+        particle-count: 10
+        interval-ticks: 4
+        color: '#FFF3A6'
+        size: 0.75
     info-display:
+      scale: 1.0
       line-width: 240
       shadowed: true
       see-through: false
       background-color: '#66000000'
+      brightness:
+        block-light: 15
+        sky-light: 15
 
 data:
   # Out of the box support for MySQL, MariaDB, and SQLite

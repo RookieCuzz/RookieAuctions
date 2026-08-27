@@ -30,6 +30,15 @@ class ResourceContractTest {
 		assertEquals(30, config.getInt("immersive.blocked-retry-seconds"));
 		assertEquals("14:00", config.getString("immersive.schedules.afternoon.time"));
 		assertEquals("20:00", config.getString("immersive.schedules.evening.time"));
+		assertTrue(config.getBoolean("immersive.auctioneer-feedback.enabled"));
+		assertEquals("auctioneer", config.getString("immersive.auctioneer-feedback.npc-id"));
+		assertEquals("deal", config.getString("immersive.auctioneer-feedback.animation.id"));
+		assertEquals(10, config.getInt("immersive.auctioneer-feedback.animation.priority"));
+		assertTrue(config.getBoolean("immersive.auctioneer-feedback.sound.enabled"));
+		assertEquals(8, config.getInt("immersive.auctioneer-feedback.sound.interval-ticks"));
+		assertEquals(1.1D, config.getDouble("immersive.auctioneer-feedback.sound.volume"));
+		assertEquals(0.95D, config.getDouble("immersive.auctioneer-feedback.sound.first-pitch"));
+		assertEquals(1.05D, config.getDouble("immersive.auctioneer-feedback.sound.second-pitch"));
 		assertEquals(30, config.getInt("antisnipe.seconds-for-start"));
 		assertEquals(30, config.getInt("antisnipe.time"));
 		assertEquals(3, config.getInt("antisnipe.run-times"));

@@ -22,4 +22,7 @@ public interface TaskScheduler {
 
 	CancellableTask runSyncRepeatingTask(@NotNull Plugin plugin, @NotNull Runnable runnable,
 	                                     long initialDelaySeconds, long intervalSeconds);
+
+	CancellableTask runSyncRepeatingTickTask(@NotNull Plugin plugin, @NotNull Runnable runnable,
+	                                         long initialDelayTicks, long intervalTicks);
 }

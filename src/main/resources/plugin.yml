@@ -4,7 +4,7 @@ version: ${project.version}
 api-version: '1.21'
 authors: [RookieCuzz, Elian, Silverwolfg11]
 description: A safe, inventory-GUI auction plugin
-softdepend: [Vault, PlaceholderAPI, ViaVersion]
+softdepend: [Vault, PlaceholderAPI, ViaVersion, Adyeshach, ModelEngine]
 provides: [ezAuctions]
 
 permissions:
@@ -18,12 +18,14 @@ permissions:
       rookieauctions.session.leave: true
       rookieauctions.admin.venue: true
       rookieauctions.admin.session: true
+      rookieauctions.admin.reload: true
   rookieauctions.admin:
     default: false
     children:
       ezauctions.admin: true
       rookieauctions.admin.venue: true
       rookieauctions.admin.session: true
+      rookieauctions.admin.reload: true
   rookieauctions.player:
     default: true
     children:
@@ -46,6 +48,14 @@ permissions:
   rookieauctions.admin.session:
     default: op
     description: Inspect and manage scheduled sessions
+  rookieauctions.admin.reload:
+    default: op
+    description: Reload RookieAuctions configuration and messages
+    children:
+      rookieauctions.auction.reload: true
+  rookieauctions.admin.session.force-start:
+    default: op
+    description: Force-start the next eligible auction session
   rookieauctions.auction:
     default: true
     children:
@@ -153,6 +163,8 @@ permissions:
       ezauctions.auction.update: true
       rookieauctions.admin.venue: true
       rookieauctions.admin.session: true
+      rookieauctions.admin.reload: true
+      rookieauctions.admin.session.force-start: true
   ezauctions.player:
     default: true
     children:

@@ -12,6 +12,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -87,6 +88,36 @@ class ImmersiveVenueTest {
 	@Test
 	void displaySpinPeriodIsMeasuredInServerTicks() {
 		assertEquals(4.5F, VenueDisplayController.degreesPerTick(80), 0.0001F);
+		assertEquals(36F, VenueDisplayController.degreesPerTick(10), 0.0001F);
 		assertEquals(360F, VenueDisplayController.degreesPerTick(0), 0.0001F);
+		assertEquals(10, VenueConfig.normalizeSpinPeriodTicks(10));
+		assertEquals(1, VenueConfig.normalizeSpinPeriodTicks(0));
+	}
+
+	@Test
+	void previewPinsItsStateForTenSecondsThenRestoresTheNewestLiveState() {
+		VenueDisplayState liveBefore = VenueDisplayState.idle("午场", 1, 16);
+		VenueDisplayState preview = VenueDisplayState.lot("场地预览", 1, 16,
+				new ItemStack(Material.DIAMOND), "钻石", 120,
+				"¥ 1,000", false, 2_070);
+		VenueDisplayState liveAfter = VenueDisplayState.idle("晚场", 2, 16);
+		VenueDisplayController.PreviewWindow window = new VenueDisplayController.PreviewWindow();
+
+		assertFalse(window.updateLive(liveBefore));
+		long revision = window.begin(preview);
+		assertEquals(5L, VenueDisplayController.PREVIEW_DEAL_DELAY_SECONDS);
+		assertEquals(10L, VenueDisplayController.PREVIEW_DURATION_SECONDS);
+		assertTrue(window.active());
+		assertSame(preview, window.current());
+
+		assertTrue(window.updateLive(liveAfter));
+		assertSame(preview, window.current(), "Live ticks must not overwrite an active preview");
+		assertFalse(window.expire(revision + 1L).applied(), "A stale timer must not end the preview");
+
+		VenueDisplayController.PreviewExpiration expiration = window.expire(revision);
+		assertTrue(expiration.applied());
+		assertSame(liveAfter, expiration.restoredState());
+		assertFalse(window.active());
+		assertSame(liveAfter, window.current());
 	}
 }

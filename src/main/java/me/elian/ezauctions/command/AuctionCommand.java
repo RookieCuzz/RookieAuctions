@@ -11,6 +11,8 @@ import co.aikar.commands.annotation.Syntax;
 import com.google.inject.Inject;
 import com.google.inject.Singleton;
 import me.elian.ezauctions.gui.AuctionGuiController;
+import me.elian.ezauctions.controller.ConfigController;
+import me.elian.ezauctions.controller.MessageController;
 import me.elian.ezauctions.controller.session.AuctionSessionController;
 import me.elian.ezauctions.immersive.AttendanceResult;
 import me.elian.ezauctions.immersive.AttendanceService;
@@ -22,6 +24,7 @@ import me.elian.ezauctions.scheduler.TaskScheduler;
 import me.elian.ezauctions.session.AuctionSessionView;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
 import java.io.IOException;
@@ -36,22 +39,44 @@ public final class AuctionCommand extends BaseCommand {
 	private final AttendanceService attendance;
 	private final TaskScheduler scheduler;
 	private final AuctionSessionController sessions;
+	private final ConfigController config;
+	private final MessageController messages;
 
 	@Inject
 	public AuctionCommand(AuctionGuiController gui, VenueConfig venueConfig,
 	                      VenueDisplayController venueDisplay, AttendanceService attendance,
-	                      TaskScheduler scheduler, AuctionSessionController sessions) {
+	                      TaskScheduler scheduler, AuctionSessionController sessions,
+	                      ConfigController config, MessageController messages) {
 		this.gui = gui;
 		this.venueConfig = venueConfig;
 		this.venueDisplay = venueDisplay;
 		this.attendance = attendance;
 		this.scheduler = scheduler;
 		this.sessions = sessions;
+		this.config = config;
+		this.messages = messages;
 	}
 
 	@Default
 	public void open(Player player) {
 		gui.open(player);
+	}
+
+	@Subcommand("reload")
+	@CommandPermission("rookieauctions.auction.reload")
+	@Description("Reload configuration, messages and auction session scheduling")
+	public void reload(CommandSender sender) {
+		try {
+			config.reloadConfiguration();
+			messages.reloadMessages();
+			sessions.reloadSchedule();
+			venueDisplay.refresh();
+			sessions.requestImmediateMaintenance();
+			sendCommandMessage(sender, Component.text("RookieAuctions configuration reloaded.", NamedTextColor.GREEN));
+		} catch (IOException | RuntimeException error) {
+			sendCommandMessage(sender, Component.text("Could not reload RookieAuctions: "
+				+ String.valueOf(error.getMessage()), NamedTextColor.RED));
+		}
 	}
 
 	@Subcommand("leave")
@@ -72,6 +97,21 @@ public final class AuctionCommand extends BaseCommand {
 				}, player));
 	}
 
+
+	@Subcommand("admin session force-start")
+	@CommandPermission("rookieauctions.admin.session.force-start")
+	@Description("Force-start the earliest eligible auction session")
+	public void forceStartSession(CommandSender sender) {
+		sessions.forceStartNextSession().whenComplete((result, error) -> {
+			if (error != null) {
+				sendCommandMessage(sender, Component.text("Could not force-start a session: "
+					+ String.valueOf(error.getMessage()), NamedTextColor.RED));
+				return;
+			}
+			NamedTextColor color = result.started() ? NamedTextColor.GREEN : NamedTextColor.YELLOW;
+			sendCommandMessage(sender, Component.text(result.message(), color));
+		});
+	}
 	@Subcommand("admin venue set")
 	@CommandPermission("rookieauctions.admin.venue")
 	@CommandCompletion("buyer-spawn|item-display|info-display|corner1|corner2")
@@ -104,7 +144,7 @@ public final class AuctionCommand extends BaseCommand {
 
 	@Subcommand("admin venue preview")
 	@CommandPermission("rookieauctions.admin.venue")
-	@Description("Preview the configured item and information displays")
+	@Description("Preview the configured displays for ten seconds")
 	public void previewVenue(Player player) {
 		VenueValidation validation = venueConfig.validate();
 		if (!validation.valid()) {
@@ -112,7 +152,9 @@ public final class AuctionCommand extends BaseCommand {
 			return;
 		}
 		venueDisplay.preview();
-		player.sendMessage(Component.text("场地预览已生成。", NamedTextColor.GREEN));
+		player.sendMessage(Component.text(
+				"场地预览已生成，将持续 10 秒；第 5 秒触发成交动画和音效。",
+				NamedTextColor.GREEN));
 	}
 
 	@Subcommand("admin venue validate")
@@ -134,7 +176,9 @@ public final class AuctionCommand extends BaseCommand {
 			venueConfig.setEnabled(true);
 			venueDisplay.preview();
 			sessions.retryBlockedNow();
-			player.sendMessage(Component.text("沉浸式拍卖场地已启用。", NamedTextColor.GREEN));
+			player.sendMessage(Component.text(
+					"沉浸式拍卖场地已启用；预览将持续 10 秒。",
+					NamedTextColor.GREEN));
 		} catch (IllegalStateException error) {
 			player.sendMessage(Component.text("无法启用：" + error.getMessage(), NamedTextColor.RED));
 		} catch (IOException error) {
@@ -183,6 +227,18 @@ public final class AuctionCommand extends BaseCommand {
 		} catch (IOException error) {
 			player.sendMessage(Component.text("无法保存停用状态，请检查服务器日志。",
 					NamedTextColor.RED));
+		}
+	}
+
+	private void sendCommandMessage(CommandSender sender, Component message) {
+		if (sender instanceof Player player) {
+			scheduler.runPlayerRegionTask(() -> {
+				if (player.isOnline()) {
+					player.sendMessage(message);
+				}
+				}, player);
+		} else {
+			scheduler.runSyncTask(() -> sender.sendMessage(message));
 		}
 	}
 
