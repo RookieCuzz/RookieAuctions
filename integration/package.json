@@ -1,0 +1,11 @@
+{
+  "name": "rookieauctions-mineflayer-smoke",
+  "private": true,
+  "description": "Mineflayer smoke client for the RookieAuctions Paper integration server",
+  "scripts": {
+    "smoke": "node bot-smoke-test.js"
+  },
+  "dependencies": {
+    "mineflayer": "4.37.1"
+  }
+}

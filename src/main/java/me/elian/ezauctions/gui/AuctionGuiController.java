@@ -30,7 +30,6 @@ import me.elian.ezauctions.scheduler.TaskScheduler;
 import me.elian.ezauctions.session.AuctionSessionView;
 import me.elian.ezauctions.session.AttendanceState;
 import me.elian.ezauctions.session.PlannedSession;
-import me.elian.ezauctions.session.ReservationStatus;
 import me.elian.ezauctions.session.SessionState;
 import me.elian.ezauctions.session.SubmissionResult;
 import net.milkbowl.vault.economy.Economy;
@@ -208,7 +207,7 @@ public final class AuctionGuiController implements Listener {
 
 		if (event.getRawSlot() >= event.getView().getTopInventory().getSize()
 				&& event.getClickedInventory() != null) {
-			if (holder.getPage() == GuiPage.WIZARD_ITEM) {
+			if (holder.getPage() == GuiPage.WIZARD_ITEM || holder.getPage() == GuiPage.WIZARD_QUICK) {
 				selectDraftItem(player, session, event.getCurrentItem());
 			}
 			return;
@@ -228,6 +227,7 @@ public final class AuctionGuiController implements Listener {
 			case QUEUE -> handleQueueClick(player, session, event.getRawSlot());
 			case QUEUE_DETAIL -> handleQueueDetailClick(player, session, event.getRawSlot());
 			case CANCEL_CONFIRM -> handleCancelConfirmation(player, session, event.getRawSlot());
+			case WIZARD_QUICK -> handleQuickSubmissionClick(player, session, event.getRawSlot());
 			case WIZARD_ITEM -> handleWizardItemClick(player, session, event.getRawSlot());
 			case WIZARD_MODE -> handleWizardModeClick(player, session, event.getRawSlot());
 			case WIZARD_PRICE -> handleWizardPriceClick(player, session, event.getRawSlot());
@@ -845,9 +845,10 @@ public final class AuctionGuiController implements Listener {
 				signal(player, false, "你没有向定时场次投稿的权限");
 				return;
 			}
-			session.draft.setDurationSeconds(config.getConfig().getInt(
-					"immersive.lot-duration-seconds", 120));
-			openWizardItem(player, session);
+			String selectedSessionId = session.selectedSessionId;
+			beginNewSubmission(session, false);
+			session.selectedSessionId = selectedSessionId;
+			openQuickSubmission(player, session);
 			return;
 		}
 		if (slot != 41) {
@@ -1049,6 +1050,230 @@ public final class AuctionGuiController implements Listener {
 		openMyAuctions(player, session);
 	}
 
+	private void beginNewSubmission(@NotNull GuiSession session, boolean reuseLastSettings) {
+		AuctionDraft previous = session.lastSubmittedDraft;
+		session.draft.reset();
+		if (reuseLastSettings && previous != null) {
+			session.draft.copySettingsFrom(previous);
+		}
+		session.selectedAuctionId = null;
+		session.selectedSessionId = null;
+		session.selectedRevision = 0L;
+		session.inputTarget = null;
+		session.submitting.set(false);
+	}
+
+	/**
+	 * Compact immersive submission screen. It keeps the safety-critical final validation in
+	 * beginCreateAuction, but puts the normal choices on one page instead of a four-page wizard.
+	 */
+	private void openQuickSubmission(@NotNull Player player, @NotNull GuiSession session) {
+		session.page = GuiPage.WIZARD_QUICK;
+		session.draft.setDurationSeconds(config.getConfig().getInt(
+				"immersive.lot-duration-seconds", 120));
+		long request = ++session.loadGeneration;
+		Inventory inventory = standardInventory(session, GuiPage.WIZARD_QUICK, "§8快速投稿 · 一页设置",
+				null, 0L);
+		renderQuickSubmission(inventory, player, session, List.of());
+		player.openInventory(inventory);
+		auctionSessions.futureSessionViews().whenComplete((views, error) ->
+				scheduler.runPlayerRegionTask(() -> {
+					if (session.page != GuiPage.WIZARD_QUICK || request != session.loadGeneration
+							|| !player.isOnline()) {
+						return;
+					}
+					renderQuickSubmission(inventory, player, session,
+							error == null && views != null ? views : List.of());
+				}, player));
+	}
+
+	private void renderQuickSubmission(@NotNull Inventory inventory, @NotNull Player player,
+	                                   @NotNull GuiSession session,
+	                                   @NotNull List<AuctionSessionView> views) {
+		fillBase(inventory);
+		inventory.setItem(4, GuiItems.item(Material.SMITHING_TABLE, "&b快速投稿",
+				"&7点击下方背包中的物品选择拍品", "&7所有设置均可在本页修改"));
+
+		List<AuctionSessionView> openViews = views.stream()
+				.filter(view -> view.state() == SessionState.OPEN && view.remainingCapacity() > 0)
+				.toList();
+		boolean selectedSessionKnown = views.stream()
+				.anyMatch(view -> view.sessionKey().equals(session.selectedSessionId));
+		if (session.selectedSessionId == null
+				|| (!views.isEmpty() && !selectedSessionKnown && !openViews.isEmpty())) {
+			session.selectedSessionId = openViews.isEmpty() ? null : openViews.getFirst().sessionKey();
+		}
+		for (int index = 0; index < 2; index++) {
+			int slot = index == 0 ? 10 : 16;
+			if (index >= views.size()) {
+				inventory.setItem(slot, GuiItems.item(MUTED, "&8暂无第 " + (index + 1) + " 个投稿场次"));
+				continue;
+			}
+			AuctionSessionView view = views.get(index);
+			boolean selected = view.sessionKey().equals(session.selectedSessionId);
+			Material material = selected ? Material.LIME_CONCRETE : Material.WRITABLE_BOOK;
+			inventory.setItem(slot, GuiItems.item(material,
+					(selected ? "&a" : "&6") + sessionLabel(view.sessionKey()),
+					"&7开场: &f" + formatSessionInstant(view.scheduledStart()),
+					"&7锁单: &f" + formatSessionInstant(view.submissionsLockAt()),
+					"&7剩余名额: &f" + view.remainingCapacity() + "/" + view.capacity(),
+					selected ? "&a当前目标场次" : "&7点击选择"));
+		}
+
+		ItemStack selected = session.draft.getSelectedItem();
+		if (selected == null) {
+			inventory.setItem(13, GuiItems.item(Material.CHEST, "&b点击下方背包中的物品",
+					"&7此时不会移除物品"));
+		} else {
+			inventory.setItem(13, GuiItems.auctionItem(selected, session.draft.getAmount(),
+					"&7数量: &f" + session.draft.getAmount(), "&8点击下方其他物品可替换"));
+		}
+
+		inventory.setItem(20, GuiItems.item(session.draft.isSealed() ? Material.GRAY_DYE : Material.LIME_DYE,
+				"&c公开竞拍", session.draft.isSealed() ? "&7点击选择" : "&a已选择"));
+		inventory.setItem(24, GuiItems.item(session.draft.isSealed() ? Material.PURPLE_DYE : Material.GRAY_DYE,
+				"&5密封竞拍", session.draft.isSealed() ? "&a已选择" : "&7点击选择",
+				"&7隐藏其他玩家的价格和身份"));
+
+		inventory.setItem(28, quantityButton("1 件", 1));
+		inventory.setItem(29, quantityButton("16 件", 16));
+		inventory.setItem(30, quantityButton("32 件", 32));
+		inventory.setItem(31, quantityButton("64 件", 64));
+		inventory.setItem(32, GuiItems.item(Material.IRON_SWORD, "&b主手全部"));
+		inventory.setItem(33, GuiItems.item(Material.CHEST_MINECART, "&b背包中全部同类"));
+
+		inventory.setItem(37, GuiItems.item(Material.GOLD_INGOT, "&6起拍价",
+				"&e$" + Money.format(session.draft.getStartingPriceMinor()), "&7点击修改"));
+		inventory.setItem(39, GuiItems.item(Material.EMERALD, "&6最低加价",
+				"&e$" + Money.format(session.draft.getIncrementMinor()), "&7点击修改"));
+		inventory.setItem(41, GuiItems.item(Material.GOLD_BLOCK, "&6一口价",
+				session.draft.isAutoBuyEnabled()
+						? "&e$" + Money.format(session.draft.getAutoBuyMinor()) : "&7未启用",
+				"&7点击输入金额"));
+		inventory.setItem(42, GuiItems.item(session.draft.isAutoBuyEnabled()
+				? Material.LIME_DYE : Material.GRAY_DYE,
+				session.draft.isAutoBuyEnabled() ? "&a一口价已启用" : "&7一口价已关闭",
+				"&7点击切换"));
+
+		AuctionSessionView selectedView = views.stream()
+				.filter(view -> view.sessionKey().equals(session.selectedSessionId)).findFirst().orElse(null);
+		String target = selectedView == null ? "未选择" : sessionLabel(selectedView.sessionKey())
+				+ "（剩余 " + selectedView.remainingCapacity() + "/" + selectedView.capacity() + "）";
+		inventory.setItem(22, GuiItems.item(Material.PAPER, "&b投稿摘要",
+				"&7目标场次: &f" + target,
+				"&7数量: &f" + session.draft.getAmount(),
+				"&7模式: " + (session.draft.isSealed() ? "&5密封" : "&c公开"),
+				"&7上架费: &e$" + Money.format(listingFee()),
+				"&c最终提交时会再次检查物品、余额和场次名额"));
+		inventory.setItem(44, GuiItems.item(selected == null ? MUTED : Material.BARRIER,
+				selected == null ? "&8请先选择物品" : "&c清空并重选物品"));
+		inventory.setItem(45, GuiItems.item(Material.BARRIER, "&c退出投稿"));
+		inventory.setItem(50, session.lastSubmittedDraft == null
+				? GuiItems.item(MUTED, "&8暂无上次设置")
+				: GuiItems.item(Material.WRITABLE_BOOK, "&b沿用上次设置",
+						"&7复制上次模式、价格和一口价", "&7不会覆盖当前选择的物品"));
+		boolean canSubmit = selected != null && selectedView != null
+				&& selectedView.state() == SessionState.OPEN && selectedView.remainingCapacity() > 0;
+		inventory.setItem(53, GuiItems.item(canSubmit ? Material.LIME_CONCRETE : MUTED,
+				canSubmit ? "&a提交投稿" : "&8请选择物品和开放场次",
+				canSubmit ? "&7点击后执行最终校验并托管" : "&7场次或物品尚未准备好"));
+	}
+
+	private void handleQuickSubmissionClick(@NotNull Player player, @NotNull GuiSession session, int slot) {
+		if (slot == 10 || slot == 16) {
+			List<PlannedSession> plans = auctionSessions.futureSubmissionSessions();
+			int index = slot == 10 ? 0 : 1;
+			if (index < plans.size()) {
+				session.selectedSessionId = plans.get(index).key();
+				openQuickSubmission(player, session);
+			}
+			return;
+		}
+		if (slot == 20) {
+			session.draft.setSealed(false);
+			openQuickSubmission(player, session);
+			return;
+		}
+		if (slot == 24) {
+			if (!config.getConfig().getBoolean("sealed-auctions.enabled")
+					|| !player.hasPermission("ezauctions.auction.start.sealed")) {
+				signal(player, false, "你不能发起密封拍卖");
+			} else {
+				session.draft.setSealed(true);
+				openQuickSubmission(player, session);
+			}
+			return;
+		}
+
+		int amount = switch (slot) {
+			case 28 -> 1;
+			case 29 -> 16;
+			case 30 -> 32;
+			case 31 -> 64;
+			case 32 -> session.draft.matches(player.getInventory().getItemInMainHand())
+					? player.getInventory().getItemInMainHand().getAmount() : 0;
+			case 33 -> {
+				ItemStack selected = session.draft.getSelectedItem();
+				yield selected == null ? 0 : ItemHelper.getAmountOfItemInInventory(player, selected);
+			}
+			default -> -1;
+		};
+		if (amount >= 0) {
+			ItemStack selected = session.draft.getSelectedItem();
+			int available = selected == null ? 0 : ItemHelper.getAmountOfItemInInventory(player, selected);
+			if (amount == 0 || amount > available) {
+				signal(player, false, "背包中没有足够的同类物品");
+			} else {
+				session.draft.setAmount(amount);
+				openQuickSubmission(player, session);
+			}
+			return;
+		}
+		switch (slot) {
+			case 37 -> openAnvil(player, session, GuiSession.InputTarget.STARTING_PRICE,
+					GuiPage.WIZARD_QUICK, Money.format(session.draft.getStartingPriceMinor()));
+			case 39 -> openAnvil(player, session, GuiSession.InputTarget.INCREMENT,
+					GuiPage.WIZARD_QUICK, Money.format(session.draft.getIncrementMinor()));
+			case 41 -> openAnvil(player, session, GuiSession.InputTarget.BUYOUT,
+					GuiPage.WIZARD_QUICK, session.draft.isAutoBuyEnabled()
+							? Money.format(session.draft.getAutoBuyMinor())
+							: Money.format(safeAdd(session.draft.getStartingPriceMinor(),
+									safeMultiply(session.draft.getIncrementMinor(), 10L))));
+			case 42 -> {
+				session.draft.setAutoBuyEnabled(!session.draft.isAutoBuyEnabled());
+				if (session.draft.isAutoBuyEnabled() && session.draft.getAutoBuyMinor() == 0) {
+					session.draft.setAutoBuyMinor(safeAdd(session.draft.getStartingPriceMinor(),
+							safeMultiply(session.draft.getIncrementMinor(), 10L)));
+				}
+				openQuickSubmission(player, session);
+			}
+			case 44 -> {
+				session.draft.clearSelectedItem();
+				openQuickSubmission(player, session);
+			}
+			case 45 -> openCurrent(player, session);
+			case 50 -> {
+				if (session.lastSubmittedDraft != null) {
+					session.draft.copySettingsFrom(session.lastSubmittedDraft);
+					openQuickSubmission(player, session);
+				}
+			}
+			case 53 -> {
+				if (session.draft.getSelectedItem() == null) {
+					signal(player, false, "请先从下方背包选择物品");
+				} else if (session.selectedSessionId == null) {
+					signal(player, false, "请先选择开放投稿场次");
+				} else if (session.submitting.compareAndSet(false, true)) {
+					player.getOpenInventory().getTopInventory().setItem(53,
+							GuiItems.item(MUTED, "&8正在创建", "&7请勿重复点击"));
+					beginCreateAuction(player, session);
+				}
+			}
+			default -> {
+			}
+		}
+	}
+
 	private void openWizardItem(@NotNull Player player, @NotNull GuiSession session) {
 		session.page = GuiPage.WIZARD_ITEM;
 		Inventory inventory = standardInventory(session, GuiPage.WIZARD_ITEM, "§8发起拍卖 · 1/4 选择物品",
@@ -1080,7 +1305,11 @@ public final class AuctionGuiController implements Listener {
 			return;
 		}
 		session.draft.select(item);
-		openWizardItem(player, session);
+		if (session.page == GuiPage.WIZARD_QUICK) {
+			openQuickSubmission(player, session);
+		} else {
+			openWizardItem(player, session);
+		}
 		player.playSound(player.getLocation(), Sound.UI_BUTTON_CLICK, 0.6F, 1.2F);
 	}
 
@@ -1361,11 +1590,12 @@ public final class AuctionGuiController implements Listener {
 	}
 
 	private void beginCreateAuction(@NotNull Player player, @NotNull GuiSession session) {
+		boolean quickFlow = session.page == GuiPage.WIZARD_QUICK;
 		String error = validateDraft(player, session);
 		if (error != null) {
 			session.submitting.set(false);
 			signal(player, false, error);
-			openWizardReview(player, session);
+			reopenSubmissionEditor(player, session, quickFlow);
 			return;
 		}
 
@@ -1373,7 +1603,11 @@ public final class AuctionGuiController implements Listener {
 		if (selected == null || session.viewer == null) {
 			session.submitting.set(false);
 			signal(player, false, "投稿快照已失效，请重新选择物品");
-			openWizardItem(player, session);
+			if (quickFlow) {
+				openQuickSubmission(player, session);
+			} else {
+				openWizardItem(player, session);
+			}
 			return;
 		}
 		int amount = session.draft.getAmount();
@@ -1398,20 +1632,20 @@ public final class AuctionGuiController implements Listener {
 			logger.severe("Could not prepare submitted auction " + auctionId, metadataError);
 			session.submitting.set(false);
 			signal(player, false, "无法读取物品数据，未扣除物品或费用");
-			openWizardReview(player, session);
+			reopenSubmissionEditor(player, session, quickFlow);
 			return;
 		}
 		AuctionSubmissionTransaction transaction = new AuctionSubmissionTransaction(
 				record.getId(), player.getUniqueId(), targetSessionId, fee, System.currentTimeMillis());
 		SubmissionAttempt attempt = new SubmissionAttempt(record, transaction, data, selected,
-				amount, fee, targetSessionId);
+				amount, fee, targetSessionId, quickFlow);
 		database.createAuctionRecord(record).whenComplete((ignored, persistError) ->
 				scheduler.runPlayerRegionTask(() -> {
 					if (persistError != null) {
 						session.submitting.set(false);
 						if (player.isOnline()) {
 							signal(player, false, "数据库暂时不可用，未扣除物品或费用");
-							openWizardReview(player, session);
+							reopenSubmissionEditor(player, session, quickFlow);
 						}
 						return;
 					}
@@ -1439,7 +1673,7 @@ public final class AuctionGuiController implements Listener {
 							.whenComplete((reservation, reserveError) -> scheduler.runPlayerRegionTask(() -> {
 								if (reserveError != null || reservation == null || !reservation.accepted()) {
 									String reason = reserveError == null && reservation != null
-											? reservationFailureText(reservation.status())
+											? reservationFailureText(reservation)
 											: "场次名额预留失败，请稍后重试";
 									compensateSubmission(player, session, attempt, reason);
 									return;
@@ -1976,22 +2210,39 @@ public final class AuctionGuiController implements Listener {
 				case STARTING_PRICE -> {
 					session.draft.setStartingPriceMinor(money);
 					session.inputTarget = null;
-					openWizardPrice(player, session);
+					reopenSubmissionEditor(player, session);
 				}
 				case INCREMENT -> {
 					session.draft.setIncrementMinor(money);
 					session.inputTarget = null;
-					openWizardPrice(player, session);
+					reopenSubmissionEditor(player, session);
 				}
 				case BUYOUT -> {
 					session.draft.setAutoBuyMinor(money);
 					session.inputTarget = null;
-					openWizardPrice(player, session);
+					reopenSubmissionEditor(player, session);
 				}
 				default -> throw new IllegalArgumentException();
 			}
 		} catch (Exception exception) {
 			signal(player, false, "请输入合法且未超出上限的数值");
+		}
+	}
+
+	private void reopenSubmissionEditor(@NotNull Player player, @NotNull GuiSession session) {
+		if (session.returnPage == GuiPage.WIZARD_QUICK) {
+			openQuickSubmission(player, session);
+		} else {
+			openWizardPrice(player, session);
+		}
+	}
+
+	private void reopenSubmissionEditor(@NotNull Player player, @NotNull GuiSession session,
+	                                    boolean quickFlow) {
+		if (quickFlow) {
+			openQuickSubmission(player, session);
+		} else {
+			openWizardReview(player, session);
 		}
 	}
 
@@ -2006,7 +2257,11 @@ public final class AuctionGuiController implements Listener {
 				if ((!immersiveEnabled() && !player.hasPermission("ezauctions.auction.start"))
 						|| (immersiveEnabled() && !canSubmitSession(player))) {
 					signal(player, false, "你没有发起拍卖的权限");
+				} else if (immersiveEnabled()) {
+					beginNewSubmission(session, false);
+					openQuickSubmission(player, session);
 				} else {
+					beginNewSubmission(session, false);
 					openWizardItem(player, session);
 				}
 			}
@@ -2347,7 +2602,7 @@ public final class AuctionGuiController implements Listener {
 					if (player.isOnline()) {
 						scheduler.runPlayerRegionTask(() -> {
 							signal(player, false, reason);
-							openWizardReview(player, session);
+							reopenSubmissionEditor(player, session, attempt.quickFlow());
 						}, player);
 					}
 				});
@@ -2374,7 +2629,7 @@ public final class AuctionGuiController implements Listener {
 					signal(player, false, success
 							? reason + "；应退资源已进入领奖箱"
 							: reason + "；补偿仍在持久化队列中，请联系管理员");
-					openWizardReview(player, session);
+					reopenSubmissionEditor(player, session, attempt.quickFlow());
 				}, player);
 			}
 		});
@@ -2389,6 +2644,13 @@ public final class AuctionGuiController implements Listener {
 			return;
 		}
 		signal(player, true, queued ? "投稿成功，已进入所选场次" : "拍卖已开始");
+		if (attempt.quickFlow()) {
+			session.lastSubmittedDraft = session.draft.copy();
+			session.draft.reset();
+			session.selectedSessionId = null;
+			openQuickSubmission(player, session);
+			return;
+		}
 		if (attempt.sessionId() != null) {
 			openQueueDetail(player, session);
 		} else if (queued) {
@@ -2429,9 +2691,9 @@ public final class AuctionGuiController implements Listener {
 				|| player.hasPermission("ezauctions.auction");
 	}
 
-	private static @NotNull String reservationFailureText(@NotNull ReservationStatus status) {
-		return switch (status) {
-			case FULL -> "本场 16 个名额已经满了";
+	private static @NotNull String reservationFailureText(@NotNull SubmissionResult result) {
+		return switch (result.status()) {
+			case FULL -> "本场名额已满（" + result.occupiedSlots() + "/" + result.capacity() + "）";
 			case SELLER_LIMIT -> "你在本场已经投稿 2 件";
 			case SESSION_CLOSED -> "本场已经锁单，无法继续投稿";
 			case NOT_FOUND -> "所选场次不存在，请重新选择";
@@ -2727,7 +2989,8 @@ public final class AuctionGuiController implements Listener {
 	private record SubmissionAttempt(@NotNull AuctionRecord record,
 	                                 @NotNull AuctionSubmissionTransaction transaction,
 	                                 @NotNull AuctionData data, @NotNull ItemStack item,
-	                                 int amount, long feeMinor, @Nullable String sessionId) {
+	                                 int amount, long feeMinor, @Nullable String sessionId,
+	                                 boolean quickFlow) {
 		private SubmissionAttempt {
 			if (amount <= 0 || feeMinor < 0) {
 				throw new IllegalArgumentException("Invalid submission resource amounts");

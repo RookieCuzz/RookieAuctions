@@ -32,6 +32,13 @@ show the current price. Existing queued lots are assigned to the next sessions d
 Back up `config.yml` and the SQLite/MariaDB database before upgrading an existing server. Generated
 sessions retain their persisted start time; schedule changes apply only to sessions created later.
 
+### Mineflayer integration smoke test
+
+The repository includes a disposable Paper 1.21.4 test server and Mineflayer client under
+[`integration/`](integration/README.md). Run `mvn -q -DskipTests package`, then execute
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\integration\run-smoke.ps1 -Reset` to verify
+plugin loading, Vault/Essentials economy hookup, venue commands, session status, and the auction GUI.
+
 When PlaceholderAPI is installed, every placeholder is available under both the
 `%rookieauctions_*%` and legacy `%ezauctions_*%` namespaces. Session placeholders are
 `session_state`, `session_start_time`, `session_remaining`, `session_current_lot`,

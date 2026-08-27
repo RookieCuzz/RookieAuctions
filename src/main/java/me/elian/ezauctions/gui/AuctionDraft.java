@@ -23,6 +23,44 @@ public final class AuctionDraft {
 		amount = 1;
 	}
 
+	/** Removes only the selected item so price/mode settings can be reused deliberately. */
+	public void clearSelectedItem() {
+		selectedItem = null;
+		fingerprint = null;
+		amount = 1;
+	}
+
+	/** Restores a new submission to safe server defaults. */
+	public void reset() {
+		clearSelectedItem();
+		sealed = false;
+		durationSeconds = 60;
+		startingPriceMinor = 100L;
+		incrementMinor = 100L;
+		autoBuyMinor = 0L;
+		autoBuyEnabled = false;
+	}
+
+	/** Copies only listing settings; the selected item remains unchanged. */
+	public void copySettingsFrom(@NotNull AuctionDraft source) {
+		sealed = source.sealed;
+		durationSeconds = source.durationSeconds;
+		startingPriceMinor = source.startingPriceMinor;
+		incrementMinor = source.incrementMinor;
+		autoBuyMinor = source.autoBuyMinor;
+		autoBuyEnabled = source.autoBuyEnabled;
+	}
+
+	/** Creates an immutable-enough snapshot for the per-player "reuse last settings" action. */
+	public @NotNull AuctionDraft copy() {
+		AuctionDraft copy = new AuctionDraft();
+		copy.selectedItem = selectedItem == null ? null : selectedItem.clone();
+		copy.fingerprint = fingerprint;
+		copy.amount = amount;
+		copy.copySettingsFrom(this);
+		return copy;
+	}
+
 	public boolean matches(@Nullable ItemStack item) {
 		return item != null && selectedItem != null
 				&& fingerprint.equals(ItemHelper.fingerprint(item));

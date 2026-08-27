@@ -49,6 +49,9 @@ dependency-reduced-pom.xml
 *.db-wal
 *.sqlite
 *.sqlite3
+/integration/server/
+/integration/node_modules/
+/integration/*.log
 
 # Local environment and editor files
 .env

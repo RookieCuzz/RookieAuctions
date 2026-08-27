@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 final class GuiSession {
 	final UUID token = UUID.randomUUID();
 	final AuctionDraft draft = new AuctionDraft();
+	AuctionDraft lastSubmittedDraft;
 	final AtomicBoolean submitting = new AtomicBoolean();
 	GuiPage page = GuiPage.CURRENT;
 	GuiPage returnPage = GuiPage.CURRENT;
