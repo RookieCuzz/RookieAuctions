@@ -1664,7 +1664,8 @@ public final class AuctionSessionController implements AttendanceSessionPolicy, 
 					auctionView.incrementMinor(), auctionView.autoBuyMinor(), price,
 					Math.max(0, auctionView.remainingSeconds()), auctionView.revision());
 			venueDisplay.update(VenueDisplayState.lot(sessionLabel(runtime.record.getId()),
-					runtime.ordinal(runtime.currentLot), runtime.totalLots(), auctionView.item(), itemName,
+					runtime.ordinal(runtime.currentLot), runtime.totalLots(), auctionView.item(),
+					auctionView.amount(), itemName,
 					Math.max(0, auctionView.remainingSeconds()),
 					auctionView.sealed() ? "已密封" : Money.format(auctionView.currentPriceMinor()),
 					auctionView.sealed(), safeInt(eta)));

@@ -48,6 +48,8 @@ permissions:
   rookieauctions.admin.session:
     default: op
     description: Inspect and manage scheduled sessions
+    children:
+      rookieauctions.admin.session.force-start: true
   rookieauctions.admin.reload:
     default: op
     description: Reload RookieAuctions configuration and messages
@@ -164,7 +166,6 @@ permissions:
       rookieauctions.admin.venue: true
       rookieauctions.admin.session: true
       rookieauctions.admin.reload: true
-      rookieauctions.admin.session.force-start: true
   ezauctions.player:
     default: true
     children:

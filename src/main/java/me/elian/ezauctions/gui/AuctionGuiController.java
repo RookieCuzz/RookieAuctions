@@ -228,6 +228,9 @@ public final class AuctionGuiController implements Listener {
 			case QUEUE_DETAIL -> handleQueueDetailClick(player, session, event.getRawSlot());
 			case CANCEL_CONFIRM -> handleCancelConfirmation(player, session, event.getRawSlot());
 			case WIZARD_QUICK -> handleQuickSubmissionClick(player, session, event.getRawSlot());
+			case WIZARD_QUICK_SESSION -> handleQuickSessionOptionsClick(player, session, event.getRawSlot());
+			case WIZARD_QUICK_MODE -> handleQuickModeOptionsClick(player, session, event.getRawSlot());
+			case WIZARD_QUICK_BUYOUT -> handleQuickBuyoutOptionsClick(player, session, event.getRawSlot());
 			case WIZARD_ITEM -> handleWizardItemClick(player, session, event.getRawSlot());
 			case WIZARD_MODE -> handleWizardModeClick(player, session, event.getRawSlot());
 			case WIZARD_PRICE -> handleWizardPriceClick(player, session, event.getRawSlot());
@@ -260,10 +263,12 @@ public final class AuctionGuiController implements Listener {
 		}
 		ItemStack output = left.clone();
 		String renameText = inventory.getRenameText();
-		if (renameText != null) {
+		if (renameText != null && !renameText.isBlank()) {
 			ItemMeta meta = output.getItemMeta();
-			meta.setDisplayName(renameText);
-			output.setItemMeta(meta);
+			if (meta != null) {
+				meta.setDisplayName(renameText);
+				output.setItemMeta(meta);
+			}
 		}
 		event.setResult(output);
 		inventory.setRepairCost(0);
@@ -274,7 +279,18 @@ public final class AuctionGuiController implements Listener {
 	@EventHandler
 	public void onClose(InventoryCloseEvent event) {
 		if (!(event.getPlayer() instanceof Player player)
-				|| !(event.getInventory().getHolder() instanceof AuctionGuiHolder)) {
+				|| !(event.getInventory().getHolder() instanceof AuctionGuiHolder holder)) {
+			return;
+		}
+		GuiSession session = sessions.get(player.getUniqueId());
+		if (holder.getPage() == GuiPage.ANVIL_INPUT && session != null
+				&& session.page == GuiPage.ANVIL_INPUT && session.inputTarget != null) {
+			scheduler.runPlayerRegionTask(() -> {
+				if (player.isOnline() && session.page == GuiPage.ANVIL_INPUT
+						&& session.inputTarget != null) {
+					restoreAnvilOrigin(player, session);
+				}
+			}, player);
 			return;
 		}
 		scheduler.runPlayerRegionTask(() -> updateBossBar(player), player);
@@ -1064,15 +1080,15 @@ public final class AuctionGuiController implements Listener {
 	}
 
 	/**
-	 * Compact immersive submission screen. It keeps the safety-critical final validation in
-	 * beginCreateAuction, but puts the normal choices on one page instead of a four-page wizard.
+	 * Compact immersive submission hub. Option groups open focused child menus, while the
+	 * safety-critical final validation remains in beginCreateAuction.
 	 */
 	private void openQuickSubmission(@NotNull Player player, @NotNull GuiSession session) {
 		session.page = GuiPage.WIZARD_QUICK;
 		session.draft.setDurationSeconds(config.getConfig().getInt(
 				"immersive.lot-duration-seconds", 120));
 		long request = ++session.loadGeneration;
-		Inventory inventory = standardInventory(session, GuiPage.WIZARD_QUICK, "§8快速投稿 · 一页设置",
+		Inventory inventory = standardInventory(session, GuiPage.WIZARD_QUICK, "§8快速投稿 · 主菜单",
 				null, 0L);
 		renderQuickSubmission(inventory, player, session, List.of());
 		player.openInventory(inventory);
@@ -1092,7 +1108,7 @@ public final class AuctionGuiController implements Listener {
 	                                   @NotNull List<AuctionSessionView> views) {
 		fillBase(inventory);
 		inventory.setItem(4, GuiItems.item(Material.SMITHING_TABLE, "&b快速投稿",
-				"&7点击下方背包中的物品选择拍品", "&7所有设置均可在本页修改"));
+				"&7点击下方背包中的物品选择拍品", "&7点击设置项进入子菜单"));
 
 		List<AuctionSessionView> openViews = views.stream()
 				.filter(view -> view.state() == SessionState.OPEN && view.remainingCapacity() > 0)
@@ -1103,21 +1119,18 @@ public final class AuctionGuiController implements Listener {
 				|| (!views.isEmpty() && !selectedSessionKnown && !openViews.isEmpty())) {
 			session.selectedSessionId = openViews.isEmpty() ? null : openViews.getFirst().sessionKey();
 		}
-		for (int index = 0; index < 2; index++) {
-			int slot = index == 0 ? 10 : 16;
-			if (index >= views.size()) {
-				inventory.setItem(slot, GuiItems.item(MUTED, "&8暂无第 " + (index + 1) + " 个投稿场次"));
-				continue;
-			}
-			AuctionSessionView view = views.get(index);
-			boolean selected = view.sessionKey().equals(session.selectedSessionId);
-			Material material = selected ? Material.LIME_CONCRETE : Material.WRITABLE_BOOK;
-			inventory.setItem(slot, GuiItems.item(material,
-					(selected ? "&a" : "&6") + sessionLabel(view.sessionKey()),
-					"&7开场: &f" + formatSessionInstant(view.scheduledStart()),
-					"&7锁单: &f" + formatSessionInstant(view.submissionsLockAt()),
-					"&7剩余名额: &f" + view.remainingCapacity() + "/" + view.capacity(),
-					selected ? "&a当前目标场次" : "&7点击选择"));
+		AuctionSessionView selectedView = views.stream()
+				.filter(view -> view.sessionKey().equals(session.selectedSessionId))
+				.findFirst().orElse(null);
+		if (selectedView == null) {
+			inventory.setItem(10, GuiItems.item(Material.CLOCK, "&b投稿场次",
+					"&7尚未选择开放场次", "&7点击进入场次菜单"));
+		} else {
+			inventory.setItem(10, GuiItems.item(Material.WRITABLE_BOOK, "&b投稿场次",
+					"&f" + sessionLabel(selectedView.sessionKey()),
+					"&7开场: &f" + formatSessionInstant(selectedView.scheduledStart()),
+					"&7剩余名额: &f" + selectedView.remainingCapacity() + "/" + selectedView.capacity(),
+					"&7点击进入场次菜单"));
 		}
 
 		ItemStack selected = session.draft.getSelectedItem();
@@ -1129,18 +1142,13 @@ public final class AuctionGuiController implements Listener {
 					"&7数量: &f" + session.draft.getAmount(), "&8点击下方其他物品可替换"));
 		}
 
-		inventory.setItem(20, GuiItems.item(session.draft.isSealed() ? Material.GRAY_DYE : Material.LIME_DYE,
-				"&c公开竞拍", session.draft.isSealed() ? "&7点击选择" : "&a已选择"));
-		inventory.setItem(24, GuiItems.item(session.draft.isSealed() ? Material.PURPLE_DYE : Material.GRAY_DYE,
-				"&5密封竞拍", session.draft.isSealed() ? "&a已选择" : "&7点击选择",
-				"&7隐藏其他玩家的价格和身份"));
+		inventory.setItem(16, GuiItems.item(session.draft.isSealed()
+						? Material.ENDER_EYE : Material.GOLDEN_AXE,
+				"&b竞拍模式",
+				session.draft.isSealed() ? "&5密封竞拍" : "&6公开竞拍",
+				"&7点击进入模式菜单"));
 
-		inventory.setItem(28, quantityButton("1 件", 1));
-		inventory.setItem(29, quantityButton("16 件", 16));
-		inventory.setItem(30, quantityButton("32 件", 32));
-		inventory.setItem(31, quantityButton("64 件", 64));
-		inventory.setItem(32, GuiItems.item(Material.IRON_SWORD, "&b主手全部"));
-		inventory.setItem(33, GuiItems.item(Material.CHEST_MINECART, "&b背包中全部同类"));
+		inventory.setItem(31, stackAmountIndicator(selected, session.draft.getAmount()));
 
 		inventory.setItem(37, GuiItems.item(Material.GOLD_INGOT, "&6起拍价",
 				"&e$" + Money.format(session.draft.getStartingPriceMinor()), "&7点击修改"));
@@ -1149,14 +1157,8 @@ public final class AuctionGuiController implements Listener {
 		inventory.setItem(41, GuiItems.item(Material.GOLD_BLOCK, "&6一口价",
 				session.draft.isAutoBuyEnabled()
 						? "&e$" + Money.format(session.draft.getAutoBuyMinor()) : "&7未启用",
-				"&7点击输入金额"));
-		inventory.setItem(42, GuiItems.item(session.draft.isAutoBuyEnabled()
-				? Material.LIME_DYE : Material.GRAY_DYE,
-				session.draft.isAutoBuyEnabled() ? "&a一口价已启用" : "&7一口价已关闭",
-				"&7点击切换"));
+				"&7点击进入一口价菜单"));
 
-		AuctionSessionView selectedView = views.stream()
-				.filter(view -> view.sessionKey().equals(session.selectedSessionId)).findFirst().orElse(null);
 		String target = selectedView == null ? "未选择" : sessionLabel(selectedView.sessionKey())
 				+ "（剩余 " + selectedView.remainingCapacity() + "/" + selectedView.capacity() + "）";
 		inventory.setItem(22, GuiItems.item(Material.PAPER, "&b投稿摘要",
@@ -1180,53 +1182,12 @@ public final class AuctionGuiController implements Listener {
 	}
 
 	private void handleQuickSubmissionClick(@NotNull Player player, @NotNull GuiSession session, int slot) {
-		if (slot == 10 || slot == 16) {
-			List<PlannedSession> plans = auctionSessions.futureSubmissionSessions();
-			int index = slot == 10 ? 0 : 1;
-			if (index < plans.size()) {
-				session.selectedSessionId = plans.get(index).key();
-				openQuickSubmission(player, session);
-			}
+		if (slot == 10) {
+			openQuickSessionOptions(player, session);
 			return;
 		}
-		if (slot == 20) {
-			session.draft.setSealed(false);
-			openQuickSubmission(player, session);
-			return;
-		}
-		if (slot == 24) {
-			if (!config.getConfig().getBoolean("sealed-auctions.enabled")
-					|| !player.hasPermission("ezauctions.auction.start.sealed")) {
-				signal(player, false, "你不能发起密封拍卖");
-			} else {
-				session.draft.setSealed(true);
-				openQuickSubmission(player, session);
-			}
-			return;
-		}
-
-		int amount = switch (slot) {
-			case 28 -> 1;
-			case 29 -> 16;
-			case 30 -> 32;
-			case 31 -> 64;
-			case 32 -> session.draft.matches(player.getInventory().getItemInMainHand())
-					? player.getInventory().getItemInMainHand().getAmount() : 0;
-			case 33 -> {
-				ItemStack selected = session.draft.getSelectedItem();
-				yield selected == null ? 0 : ItemHelper.getAmountOfItemInInventory(player, selected);
-			}
-			default -> -1;
-		};
-		if (amount >= 0) {
-			ItemStack selected = session.draft.getSelectedItem();
-			int available = selected == null ? 0 : ItemHelper.getAmountOfItemInInventory(player, selected);
-			if (amount == 0 || amount > available) {
-				signal(player, false, "背包中没有足够的同类物品");
-			} else {
-				session.draft.setAmount(amount);
-				openQuickSubmission(player, session);
-			}
+		if (slot == 16) {
+			openQuickModeOptions(player, session);
 			return;
 		}
 		switch (slot) {
@@ -1234,19 +1195,7 @@ public final class AuctionGuiController implements Listener {
 					GuiPage.WIZARD_QUICK, Money.format(session.draft.getStartingPriceMinor()));
 			case 39 -> openAnvil(player, session, GuiSession.InputTarget.INCREMENT,
 					GuiPage.WIZARD_QUICK, Money.format(session.draft.getIncrementMinor()));
-			case 41 -> openAnvil(player, session, GuiSession.InputTarget.BUYOUT,
-					GuiPage.WIZARD_QUICK, session.draft.isAutoBuyEnabled()
-							? Money.format(session.draft.getAutoBuyMinor())
-							: Money.format(safeAdd(session.draft.getStartingPriceMinor(),
-									safeMultiply(session.draft.getIncrementMinor(), 10L))));
-			case 42 -> {
-				session.draft.setAutoBuyEnabled(!session.draft.isAutoBuyEnabled());
-				if (session.draft.isAutoBuyEnabled() && session.draft.getAutoBuyMinor() == 0) {
-					session.draft.setAutoBuyMinor(safeAdd(session.draft.getStartingPriceMinor(),
-							safeMultiply(session.draft.getIncrementMinor(), 10L)));
-				}
-				openQuickSubmission(player, session);
-			}
+			case 41 -> openQuickBuyoutOptions(player, session);
 			case 44 -> {
 				session.draft.clearSelectedItem();
 				openQuickSubmission(player, session);
@@ -1274,6 +1223,193 @@ public final class AuctionGuiController implements Listener {
 		}
 	}
 
+	private void openQuickSessionOptions(@NotNull Player player, @NotNull GuiSession session) {
+		session.page = GuiPage.WIZARD_QUICK_SESSION;
+		session.visibleSessions.clear();
+		long request = ++session.loadGeneration;
+		Inventory inventory = standardInventory(session, GuiPage.WIZARD_QUICK_SESSION,
+				"§8快速投稿 · 选择场次", null, 0L);
+		fillBase(inventory);
+		inventory.setItem(4, GuiItems.item(Material.CLOCK, "&b选择投稿场次",
+				"&7选择后自动返回投稿主菜单"));
+		inventory.setItem(22, GuiItems.item(Material.CLOCK, "&b正在加载开放场次"));
+		inventory.setItem(45, GuiItems.item(Material.ARROW, "&7返回投稿主菜单"));
+		player.openInventory(inventory);
+		auctionSessions.futureSessionViews().whenComplete((views, error) ->
+				scheduler.runPlayerRegionTask(() -> {
+					if (session.page != GuiPage.WIZARD_QUICK_SESSION
+							|| request != session.loadGeneration || !player.isOnline()) {
+						return;
+					}
+					renderQuickSessionOptions(inventory, session,
+							error == null && views != null ? views : List.of(), error != null);
+				}, player));
+	}
+
+	private void renderQuickSessionOptions(@NotNull Inventory inventory,
+	                                      @NotNull GuiSession session,
+	                                      @NotNull List<AuctionSessionView> views,
+	                                      boolean loadFailed) {
+		fillBase(inventory);
+		session.visibleSessions.clear();
+		inventory.setItem(4, GuiItems.item(Material.CLOCK, "&b选择投稿场次",
+				"&7选择后自动返回投稿主菜单"));
+		List<AuctionSessionView> options = views.stream()
+				.filter(view -> view.state() == SessionState.OPEN && view.remainingCapacity() > 0)
+				.limit(2)
+				.toList();
+		if (loadFailed) {
+			inventory.setItem(22, GuiItems.item(Material.BARRIER, "&c场次加载失败",
+					"&7请返回后重试"));
+		} else if (options.isEmpty()) {
+			inventory.setItem(22, GuiItems.item(Material.HOPPER, "&7暂无开放投稿场次"));
+		} else {
+			int[] slots = {20, 24};
+			for (int index = 0; index < options.size(); index++) {
+				AuctionSessionView view = options.get(index);
+				int slot = slots[index];
+				boolean selected = view.sessionKey().equals(session.selectedSessionId);
+				session.visibleSessions.put(slot, view.sessionKey());
+				inventory.setItem(slot, GuiItems.item(
+						selected ? Material.LIME_CONCRETE : Material.WRITABLE_BOOK,
+						(selected ? "&a" : "&6") + sessionLabel(view.sessionKey()),
+						"&7开场: &f" + formatSessionInstant(view.scheduledStart()),
+						"&7锁单: &f" + formatSessionInstant(view.submissionsLockAt()),
+						"&7剩余名额: &f" + view.remainingCapacity() + "/" + view.capacity(),
+						selected ? "&a当前已选择" : "&7点击选择"));
+			}
+		}
+		inventory.setItem(45, GuiItems.item(Material.ARROW, "&7返回投稿主菜单"));
+	}
+
+	private void handleQuickSessionOptionsClick(@NotNull Player player,
+	                                           @NotNull GuiSession session, int slot) {
+		if (slot == 45) {
+			openQuickSubmission(player, session);
+			return;
+		}
+		String sessionKey = session.visibleSessions.get(slot);
+		if (sessionKey != null) {
+			session.selectedSessionId = sessionKey;
+			openQuickSubmission(player, session);
+		}
+	}
+
+	private void openQuickModeOptions(@NotNull Player player, @NotNull GuiSession session) {
+		session.page = GuiPage.WIZARD_QUICK_MODE;
+		Inventory inventory = standardInventory(session, GuiPage.WIZARD_QUICK_MODE,
+				"§8快速投稿 · 竞拍模式", null, 0L);
+		fillBase(inventory);
+		inventory.setItem(4, GuiItems.item(
+				session.draft.isSealed() ? Material.ENDER_EYE : Material.GOLDEN_AXE,
+				"&b选择竞拍模式", "&7选择后自动返回投稿主菜单"));
+		inventory.setItem(20, GuiItems.item(
+				session.draft.isSealed() ? Material.GOLDEN_AXE : Material.LIME_CONCRETE,
+				"&6公开竞拍",
+				"&7所有玩家可以看到当前价格与领先者",
+				session.draft.isSealed() ? "&7点击选择" : "&a当前已选择"));
+
+		boolean sealedEnabled = config.getConfig().getBoolean("sealed-auctions.enabled");
+		boolean sealedAllowed = sealedEnabled
+				&& player.hasPermission("ezauctions.auction.start.sealed");
+		inventory.setItem(24, GuiItems.item(
+				sealedAllowed
+						? (session.draft.isSealed() ? Material.PURPLE_CONCRETE : Material.ENDER_EYE)
+						: MUTED,
+				sealedAllowed ? "&5密封竞拍" : "&8密封竞拍不可用",
+				sealedAllowed
+						? "&7隐藏其他玩家的价格和身份"
+						: sealedEnabled ? "&7你没有密封拍卖权限" : "&7服务器未开启密封拍卖",
+				sealedAllowed
+						? (session.draft.isSealed() ? "&a当前已选择" : "&7点击选择")
+						: "&8无法选择"));
+		inventory.setItem(45, GuiItems.item(Material.ARROW, "&7返回投稿主菜单"));
+		player.openInventory(inventory);
+	}
+
+	private void handleQuickModeOptionsClick(@NotNull Player player,
+	                                        @NotNull GuiSession session, int slot) {
+		if (slot == 45) {
+			openQuickSubmission(player, session);
+			return;
+		}
+		if (slot == 20) {
+			session.draft.setSealed(false);
+			openQuickSubmission(player, session);
+			return;
+		}
+		if (slot == 24) {
+			if (!config.getConfig().getBoolean("sealed-auctions.enabled")
+					|| !player.hasPermission("ezauctions.auction.start.sealed")) {
+				signal(player, false, "你不能发起密封拍卖");
+				return;
+			}
+			session.draft.setSealed(true);
+			openQuickSubmission(player, session);
+		}
+	}
+
+	private void openQuickBuyoutOptions(@NotNull Player player, @NotNull GuiSession session) {
+		session.page = GuiPage.WIZARD_QUICK_BUYOUT;
+		long suggested = safeAdd(session.draft.getStartingPriceMinor(),
+				safeMultiply(session.draft.getIncrementMinor(), 10L));
+		Inventory inventory = standardInventory(session, GuiPage.WIZARD_QUICK_BUYOUT,
+				"§8快速投稿 · 一口价", null, 0L);
+		fillBase(inventory);
+		inventory.setItem(4, GuiItems.item(
+				session.draft.isAutoBuyEnabled() ? Material.GOLD_BLOCK : Material.GRAY_DYE,
+				"&b一口价设置",
+				session.draft.isAutoBuyEnabled()
+						? "&7当前: &e$" + Money.format(session.draft.getAutoBuyMinor())
+						: "&7当前已关闭"));
+		inventory.setItem(20, GuiItems.item(
+				session.draft.isAutoBuyEnabled() ? Material.GRAY_DYE : Material.LIME_CONCRETE,
+				"&7关闭一口价",
+				session.draft.isAutoBuyEnabled() ? "&7点击关闭" : "&a当前已选择"));
+		inventory.setItem(22, GuiItems.item(Material.GOLD_BLOCK,
+				session.draft.isAutoBuyEnabled() ? "&6修改一口价金额" : "&6启用并设置一口价",
+				"&7输入值: &e$" + Money.format(session.draft.isAutoBuyEnabled()
+						? session.draft.getAutoBuyMinor() : suggested),
+				"&7输入完成后返回投稿主菜单"));
+		inventory.setItem(24, GuiItems.item(
+				session.draft.isAutoBuyEnabled() ? Material.LIME_CONCRETE : Material.LIME_DYE,
+				"&a启用一口价",
+				session.draft.isAutoBuyEnabled()
+						? "&a当前已选择"
+						: "&7使用建议价格 $" + Money.format(suggested)));
+		inventory.setItem(45, GuiItems.item(Material.ARROW, "&7返回投稿主菜单"));
+		player.openInventory(inventory);
+	}
+
+	private void handleQuickBuyoutOptionsClick(@NotNull Player player,
+	                                          @NotNull GuiSession session, int slot) {
+		switch (slot) {
+			case 20 -> {
+				session.draft.setAutoBuyEnabled(false);
+				openQuickSubmission(player, session);
+			}
+			case 22 -> {
+				long suggested = safeAdd(session.draft.getStartingPriceMinor(),
+						safeMultiply(session.draft.getIncrementMinor(), 10L));
+				openAnvil(player, session, GuiSession.InputTarget.BUYOUT,
+						GuiPage.WIZARD_QUICK, session.draft.isAutoBuyEnabled()
+								? Money.format(session.draft.getAutoBuyMinor())
+								: Money.format(suggested));
+			}
+			case 24 -> {
+				session.draft.setAutoBuyEnabled(true);
+				if (session.draft.getAutoBuyMinor() == 0) {
+					session.draft.setAutoBuyMinor(safeAdd(session.draft.getStartingPriceMinor(),
+							safeMultiply(session.draft.getIncrementMinor(), 10L)));
+				}
+				openQuickSubmission(player, session);
+			}
+			case 45 -> openQuickSubmission(player, session);
+			default -> {
+			}
+		}
+	}
+
 	private void openWizardItem(@NotNull Player player, @NotNull GuiSession session) {
 		session.page = GuiPage.WIZARD_ITEM;
 		Inventory inventory = standardInventory(session, GuiPage.WIZARD_ITEM, "§8发起拍卖 · 1/4 选择物品",
@@ -1288,12 +1424,7 @@ public final class AuctionGuiController implements Listener {
 					"&7计划数量: &f" + session.draft.getAmount(),
 					"&8最终确认时才会重新检查并移除"));
 		}
-		inventory.setItem(36, quantityButton("1 件", 1));
-		inventory.setItem(37, quantityButton("16 件", 16));
-		inventory.setItem(38, quantityButton("32 件", 32));
-		inventory.setItem(39, quantityButton("64 件", 64));
-		inventory.setItem(40, GuiItems.item(Material.IRON_SWORD, "&b主手全部"));
-		inventory.setItem(41, GuiItems.item(Material.CHEST_MINECART, "&b背包中全部同类物品"));
+		inventory.setItem(40, stackAmountIndicator(selected, session.draft.getAmount()));
 		inventory.setItem(44, GuiItems.item(selected == null ? MUTED : Material.LIME_CONCRETE,
 				selected == null ? "&8请先选择物品" : "&a下一步"));
 		inventory.setItem(45, GuiItems.item(Material.BARRIER, "&c退出向导"));
@@ -1320,25 +1451,8 @@ public final class AuctionGuiController implements Listener {
 			return;
 		}
 		if (selected == null) {
-			return;
-		}
-		int amount = switch (slot) {
-			case 36 -> 1;
-			case 37 -> 16;
-			case 38 -> 32;
-			case 39 -> 64;
-			case 40 -> session.draft.matches(player.getInventory().getItemInMainHand())
-					? player.getInventory().getItemInMainHand().getAmount() : 0;
-			case 41 -> ItemHelper.getAmountOfItemInInventory(player, selected);
-			default -> -1;
-		};
-		if (amount >= 0) {
-			int available = ItemHelper.getAmountOfItemInInventory(player, selected);
-			if (amount == 0 || amount > available) {
-				signal(player, false, "背包中没有足够的同类物品");
-			} else {
-				session.draft.setAmount(amount);
-				openWizardItem(player, session);
+			if (slot >= 36 && slot <= 42) {
+				signal(player, false, "请先选择物品");
 			}
 			return;
 		}
@@ -2153,15 +2267,15 @@ public final class AuctionGuiController implements Listener {
 				"输入数值");
 		holder.attach(inventory);
 		ItemStack input = GuiItems.item(Material.PAPER, initialText,
-				target == GuiSession.InputTarget.DURATION ? "&7输入秒数" : "&7输入货币金额");
+				target == GuiSession.InputTarget.DURATION ? "&7输入秒数"
+						: "&7输入货币金额");
 		inventory.setItem(0, input);
 		player.openInventory(inventory);
 	}
 
 	private void handleAnvilClick(@NotNull Player player, @NotNull GuiSession session,
 	                              @NotNull InventoryClickEvent event) {
-		if (event.getRawSlot() != 2 || event.getCurrentItem() == null
-				|| session.inputTarget == null) {
+		if (event.getRawSlot() != 2 || session.inputTarget == null) {
 			return;
 		}
 		if (!(event.getView().getTopInventory() instanceof AnvilInventory inventory)) {
@@ -2230,10 +2344,24 @@ public final class AuctionGuiController implements Listener {
 	}
 
 	private void reopenSubmissionEditor(@NotNull Player player, @NotNull GuiSession session) {
-		if (session.returnPage == GuiPage.WIZARD_QUICK) {
-			openQuickSubmission(player, session);
+		switch (session.returnPage) {
+			case WIZARD_QUICK -> openQuickSubmission(player, session);
+			case WIZARD_ITEM -> openWizardItem(player, session);
+			case WIZARD_MODE -> openWizardMode(player, session);
+			case WIZARD_PRICE -> openWizardPrice(player, session);
+			default -> openCurrent(player, session);
+		}
+	}
+
+	private void restoreAnvilOrigin(@NotNull Player player, @NotNull GuiSession session) {
+		GuiSession.InputTarget target = session.inputTarget;
+		session.inputTarget = null;
+		if (target == GuiSession.InputTarget.BID) {
+			openBidReturn(player, session);
+		} else if (target == GuiSession.InputTarget.DURATION) {
+			openWizardMode(player, session);
 		} else {
-			openWizardPrice(player, session);
+			reopenSubmissionEditor(player, session);
 		}
 	}
 
@@ -2471,10 +2599,14 @@ public final class AuctionGuiController implements Listener {
 		return Math.max(0, Math.min(requestedPage, lastPage));
 	}
 
-	private @NotNull ItemStack quantityButton(@NotNull String name, int amount) {
-		ItemStack item = GuiItems.item(Material.PAPER, "&b" + name);
-		item.setAmount(Math.max(1, Math.min(64, amount)));
-		return item;
+	private @NotNull ItemStack stackAmountIndicator(@Nullable ItemStack selected, int amount) {
+		if (selected == null) {
+			return GuiItems.item(MUTED, "&8上架数量待确定",
+					"&7选择背包中的一组物品后自动确定");
+		}
+		return GuiItems.item(Material.CHEST, "&b整组上架 × " + Math.max(1, amount),
+				"&7数量固定取所选物品堆叠数量",
+				"&8如需更改，请先在背包中拆分堆叠后重新选择");
 	}
 
 	private @NotNull ItemStack filterItem(@NotNull AuctionRecordStatus filter,

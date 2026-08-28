@@ -55,6 +55,10 @@ immersive:
         interval-ticks: 4
         color: '#FFF3A6'
         size: 0.75
+      label:
+        enabled: true
+        height: 1.25
+        scale: 1.0
     info-display:
       scale: 1.0
       line-width: 240

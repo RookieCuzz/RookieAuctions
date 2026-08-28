@@ -130,6 +130,20 @@ public final class VenueConfig {
 		return (float) clamp(config().getDouble(ROOT + "item-display.halo.size", 0.75D), 0.1D, 4D, 0.75D);
 	}
 
+	public synchronized boolean itemLabelEnabled() {
+		return config().getBoolean(ROOT + "item-display.label.enabled", true);
+	}
+
+	public synchronized double itemLabelHeight() {
+		return clamp(config().getDouble(ROOT + "item-display.label.height", 1.25D),
+				0.25D, 4D, 1.25D);
+	}
+
+	public synchronized float itemLabelScale() {
+		return (float) clamp(config().getDouble(ROOT + "item-display.label.scale", 1D),
+				0.05D, 4D, 1F);
+	}
+
 	public synchronized float infoDisplayScale() {
 		return (float) clamp(config().getDouble(ROOT + "info-display.scale", 1D), 0.05D, 4D, 1D);
 	}

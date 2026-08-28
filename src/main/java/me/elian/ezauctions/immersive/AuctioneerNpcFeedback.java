@@ -107,7 +107,12 @@ public final class AuctioneerNpcFeedback implements Listener {
 		}
 		try {
 			NpcHandle handle = resolveNpc(true);
-			playAnimation(handle);
+			try {
+				playAnimation(handle);
+			} catch (ReflectiveOperationException | LinkageError | RuntimeException error) {
+				warnOnce("animation-signal", "Auctioneer animation bridge reported an error for '"
+						+ npcId() + "': " + rootMessage(error), error);
+			}
 			playVillagerHums(handle.location());
 			plugin.getLogger().info("Auctioneer NPC '" + npcId() + "' received deal signal: "
 					+ animationId());
@@ -209,8 +214,10 @@ public final class AuctioneerNpcFeedback implements Listener {
 	private void playVillagerHum(@NotNull Location location, float volume, float pitch) {
 		World world = location.getWorld();
 		if (world != null) {
-			world.playSound(location, Sound.ENTITY_VILLAGER_AMBIENT,
-					SoundCategory.NEUTRAL, volume, pitch);
+			for (Player player : world.getPlayers()) {
+				player.playSound(location, Sound.ENTITY_VILLAGER_AMBIENT,
+						SoundCategory.NEUTRAL, volume, pitch);
+			}
 		}
 	}
 

@@ -237,11 +237,14 @@ class RookieAuctionsTest {
 		seller.simulateInventoryClick(53);
 		awaitCondition(() -> {
 			ItemStack remaining = seller.getInventory().getItem(0);
-			return remaining != null && remaining.getAmount() == 1 && auctions.hasActiveAuction();
+			return (remaining == null || remaining.getType() == Material.AIR)
+					&& auctions.hasActiveAuction();
 		});
 
 		List<AuctionRecord> sellerRecords = await(database.getAuctionRecords(seller.getUniqueId()));
 		assertEquals(1, sellerRecords.size(), "Double click must create only one auction");
+		assertEquals(2, sellerRecords.get(0).getAmount(),
+				"The entire selected stack must be escrowed");
 		Auction active = auctions.getActiveAuction();
 		assertNotNull(active);
 

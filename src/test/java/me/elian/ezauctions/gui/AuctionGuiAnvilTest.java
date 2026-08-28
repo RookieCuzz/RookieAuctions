@@ -8,6 +8,7 @@ import org.mockbukkit.mockbukkit.inventory.AnvilInventoryMock;
 import me.elian.ezauctions.InMemoryEconomy;
 import me.elian.ezauctions.RookieAuctions;
 import me.elian.ezauctions.controller.AuctionController;
+import me.elian.ezauctions.controller.ConfigController;
 import net.milkbowl.vault.Vault;
 import net.milkbowl.vault.economy.Economy;
 import org.bukkit.Material;
@@ -37,6 +38,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -127,6 +129,68 @@ class AuctionGuiAnvilTest {
 		assertEquals(5_050L, session.draft.getAutoBuyMinor());
 		assertNull(session.inputTarget);
 		assertEquals(0, player.getLevel());
+	}
+
+	@Test
+	void selectedStackAmountIsLockedAndQuantityAnvilIsUnavailable() throws Exception {
+		PlayerMock player = newSeller();
+		openCurrent(player);
+		player.simulateInventoryClick(47);
+		player.getInventory().setItem(0, new ItemStack(Material.DIAMOND, 20));
+		player.simulateInventoryClick(player.getOpenInventory(), ClickType.LEFT, 54);
+		assertPage(player, GuiPage.WIZARD_ITEM);
+		assertEquals(20, session(player).draft.getAmount());
+
+		player.simulateInventoryClick(42);
+		assertPage(player, GuiPage.WIZARD_ITEM);
+		assertEquals(20, session(player).draft.getAmount());
+		assertEquals(20, player.getInventory().getItem(0).getAmount());
+	}
+
+	@Test
+	void quickOptionSubmenusApplyChoiceAndReturnToParent() throws Exception {
+		ConfigController config = plugin.getInjector().getInstance(ConfigController.class);
+		boolean previousImmersive = config.getConfig().getBoolean("immersive.enabled");
+		config.getConfig().set("immersive.enabled", true);
+		PlayerMock player = newSeller();
+		try {
+			openCurrent(player);
+			player.simulateInventoryClick(47);
+			assertPage(player, GuiPage.WIZARD_QUICK);
+
+			GuiSession session = session(player);
+			session.draft.setSealed(true);
+			player.simulateInventoryClick(16);
+			assertPage(player, GuiPage.WIZARD_QUICK_MODE);
+			player.simulateInventoryClick(20);
+			assertPage(player, GuiPage.WIZARD_QUICK);
+			assertFalse(session.draft.isSealed());
+
+			player.simulateInventoryClick(41);
+			assertPage(player, GuiPage.WIZARD_QUICK_BUYOUT);
+			player.simulateInventoryClick(22);
+			assertPage(player, GuiPage.ANVIL_INPUT);
+			AnvilInventoryMock anvil = assertInstanceOf(AnvilInventoryMock.class,
+					player.getOpenInventory().getTopInventory());
+			anvil.setItem(2, prepareAnvil(player, "50.00"));
+			player.simulateInventoryClick(2);
+			assertPage(player, GuiPage.WIZARD_QUICK);
+			assertTrue(session.draft.isAutoBuyEnabled());
+			assertEquals(5_000L, session.draft.getAutoBuyMinor());
+
+			player.simulateInventoryClick(41);
+			assertPage(player, GuiPage.WIZARD_QUICK_BUYOUT);
+			player.simulateInventoryClick(20);
+			assertPage(player, GuiPage.WIZARD_QUICK);
+			assertFalse(session.draft.isAutoBuyEnabled());
+
+			player.simulateInventoryClick(10);
+			assertPage(player, GuiPage.WIZARD_QUICK_SESSION);
+			player.simulateInventoryClick(45);
+			assertPage(player, GuiPage.WIZARD_QUICK);
+		} finally {
+			config.getConfig().set("immersive.enabled", previousImmersive);
+		}
 	}
 
 	@Test

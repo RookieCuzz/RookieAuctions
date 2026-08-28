@@ -77,6 +77,18 @@ class ImmersiveVenueTest {
 	}
 
 	@Test
+	void itemLabelUsesAuctionAmountInsteadOfItemStackAmount() {
+		VenueDisplayState state = VenueDisplayState.lot("晚场", 1, 16,
+				new ItemStack(Material.EMERALD), 120, "祖母绿", 120,
+				"¥ 2,500", false, 3_661);
+		String rendered = LegacyComponentSerializer.legacySection()
+				.serialize(VenueDisplayController.buildItemLabel(state));
+
+		assertTrue(rendered.contains("祖母绿"));
+		assertTrue(rendered.contains("× 120"));
+	}
+
+	@Test
 	void venueLocationCommandNamesAreStable() {
 		assertEquals(VenueLocationType.BUYER_SPAWN,
 				VenueLocationType.fromCommandArgument("buyer-spawn").orElseThrow());

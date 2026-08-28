@@ -17,10 +17,11 @@ public final class AuctionDraft {
 	private boolean autoBuyEnabled;
 
 	public void select(@NotNull ItemStack item) {
+		int stackAmount = item.getAmount();
 		selectedItem = item.clone();
 		selectedItem.setAmount(1);
 		fingerprint = ItemHelper.fingerprint(selectedItem);
-		amount = 1;
+		amount = Math.max(1, stackAmount);
 	}
 
 	/** Removes only the selected item so price/mode settings can be reused deliberately. */
@@ -76,10 +77,6 @@ public final class AuctionDraft {
 
 	public int getAmount() {
 		return amount;
-	}
-
-	public void setAmount(int amount) {
-		this.amount = amount;
 	}
 
 	public boolean isSealed() {

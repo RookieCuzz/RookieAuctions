@@ -38,6 +38,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class VenueDisplayController implements Listener {
 	private static final String ITEM_ROLE = "item";
 	private static final String INFO_ROLE = "info";
+	private static final String ITEM_LABEL_ROLE = "item-label";
 	static final long PREVIEW_DEAL_DELAY_SECONDS = 5L;
 	static final long PREVIEW_DURATION_SECONDS = 10L;
 	private final Plugin plugin;
@@ -52,6 +53,7 @@ public final class VenueDisplayController implements Listener {
 	private final PreviewWindow previewWindow = new PreviewWindow();
 	private volatile ItemDisplay itemDisplay;
 	private volatile TextDisplay infoDisplay;
+	private volatile TextDisplay itemLabelDisplay;
 	private volatile CancellableTask rotationTask;
 	private volatile CancellableTask previewCountdownTask;
 	private float spinDegrees;
@@ -177,7 +179,9 @@ public final class VenueDisplayController implements Listener {
 				continue;
 			}
 			if ((itemDisplay == null || !itemDisplay.getUniqueId().equals(entity.getUniqueId()))
-					&& (infoDisplay == null || !infoDisplay.getUniqueId().equals(entity.getUniqueId()))) {
+					&& (infoDisplay == null || !infoDisplay.getUniqueId().equals(entity.getUniqueId()))
+					&& (itemLabelDisplay == null
+					|| !itemLabelDisplay.getUniqueId().equals(entity.getUniqueId()))) {
 				entity.remove();
 			}
 		}
@@ -245,11 +249,14 @@ public final class VenueDisplayController implements Listener {
 		ensureDisplays(layout);
 		ItemDisplay itemEntity = itemDisplay;
 		TextDisplay infoEntity = infoDisplay;
+		TextDisplay itemLabelEntity = itemLabelDisplay;
 		if (itemEntity == null || infoEntity == null) {
 			return;
 		}
 
-		itemEntity.setItemStack(state.item());
+		ItemStack renderedItem = state.item();
+		boolean itemVisible = isItemVisible(state, renderedItem);
+		itemEntity.setItemStack(itemVisible ? renderedItem : new ItemStack(Material.AIR));
 		applyItemScale(itemEntity, layout.itemScale());
 		applyBrightness(itemEntity, venueConfig.itemBlockLight(), venueConfig.itemSkyLight());
 		applyTextScale(infoEntity, venueConfig.infoDisplayScale());
@@ -259,11 +266,23 @@ public final class VenueDisplayController implements Listener {
 		infoEntity.setSeeThrough(venueConfig.infoSeeThrough());
 		infoEntity.setBackgroundColor(venueConfig.infoBackgroundColor());
 		infoEntity.text(buildInformation(state));
+		if (itemLabelEntity != null) {
+			applyTextScale(itemLabelEntity, venueConfig.itemLabelScale());
+			applyBrightness(itemLabelEntity, venueConfig.itemBlockLight(), venueConfig.itemSkyLight());
+			itemLabelEntity.setLineWidth(venueConfig.infoLineWidth());
+			itemLabelEntity.setShadowed(venueConfig.infoShadowed());
+			itemLabelEntity.setSeeThrough(venueConfig.infoSeeThrough());
+			itemLabelEntity.setBackgroundColor(venueConfig.infoBackgroundColor());
+			itemLabelEntity.text(itemVisible
+					? buildItemLabel(state) : Component.empty());
+		}
 	}
 
 	private void ensureDisplays(VenueLayout layout) {
 		Location itemLocation = layout.itemDisplay();
 		Location infoLocation = layout.infoDisplay();
+		Location itemLabelLocation = itemLocation.clone().add(0D,
+				venueConfig.itemLabelHeight(), 0D);
 		if (!usableAt(itemDisplay, itemLocation)) {
 			remove(itemDisplay);
 			itemDisplay = spawnItemDisplay(itemLocation);
@@ -276,6 +295,18 @@ public final class VenueDisplayController implements Listener {
 			infoDisplay = spawnInfoDisplay(infoLocation);
 		} else if (!samePosition(infoDisplay.getLocation(), infoLocation)) {
 			infoDisplay.teleport(infoLocation);
+		}
+
+		if (venueConfig.itemLabelEnabled()) {
+			if (!usableAt(itemLabelDisplay, itemLabelLocation)) {
+				remove(itemLabelDisplay);
+				itemLabelDisplay = spawnItemLabelDisplay(itemLabelLocation);
+			} else if (!samePosition(itemLabelDisplay.getLocation(), itemLabelLocation)) {
+				itemLabelDisplay.teleport(itemLabelLocation);
+			}
+		} else {
+			remove(itemLabelDisplay);
+			itemLabelDisplay = null;
 		}
 	}
 
@@ -295,6 +326,17 @@ public final class VenueDisplayController implements Listener {
 		World world = Objects.requireNonNull(location.getWorld(), "info display world");
 		TextDisplay display = world.spawn(location, TextDisplay.class);
 		configureBase(display, INFO_ROLE);
+		display.setBillboard(Display.Billboard.CENTER);
+		display.setAlignment(TextDisplay.TextAlignment.CENTER);
+		display.setDefaultBackground(false);
+		display.setViewRange(2F);
+		return display;
+	}
+
+	private TextDisplay spawnItemLabelDisplay(Location location) {
+		World world = Objects.requireNonNull(location.getWorld(), "item label world");
+		TextDisplay display = world.spawn(location, TextDisplay.class);
+		configureBase(display, ITEM_LABEL_ROLE);
 		display.setBillboard(Display.Billboard.CENTER);
 		display.setAlignment(TextDisplay.TextAlignment.CENTER);
 		display.setDefaultBackground(false);
@@ -342,6 +384,10 @@ public final class VenueDisplayController implements Listener {
 		if (display == null || !display.isValid()) {
 			return;
 		}
+		if (!isItemVisible(state, display.getItemStack())) {
+			haloTick = 0L;
+			return;
+		}
 
 		int periodTicks = venueConfig.itemSpinPeriodTicks();
 		spinDegrees = (spinDegrees + degreesPerTick(periodTicks)) % 360F;
@@ -356,6 +402,11 @@ public final class VenueDisplayController implements Listener {
 		} else {
 			haloTick = 0L;
 		}
+	}
+
+	private boolean isItemVisible(@NotNull VenueDisplayState state, @NotNull ItemStack item) {
+		return state.phase() == VenueDisplayPhase.LOT
+				&& state.itemAmount() > 0 && item.getType() != Material.AIR;
 	}
 
 	static float degreesPerTick(int periodTicks) {
@@ -418,7 +469,7 @@ public final class VenueDisplayController implements Listener {
 		private static VenueDisplayState withElapsedCountdown(VenueDisplayState state,
 		                                                     long elapsedSeconds) {
 			return new VenueDisplayState(state.phase(), state.sessionLabel(), state.lotNumber(),
-					state.lotCount(), state.item(), state.itemName(),
+					state.lotCount(), state.item(), state.itemName(), state.itemAmount(),
 					decrement(state.lotRemainingSeconds(), elapsedSeconds), state.currentBidText(),
 					state.sealed(), decrement(state.sessionRemainingSeconds(), elapsedSeconds),
 					decrement(state.phaseRemainingSeconds(), elapsedSeconds), state.nextSessionText(),
@@ -485,14 +536,17 @@ public final class VenueDisplayController implements Listener {
 		}
 		itemDisplay = null;
 		infoDisplay = null;
+		itemLabelDisplay = null;
 		haloTick = 0L;
 	}
 
 	private void removeOwnedDisplaysNow() {
 		remove(itemDisplay);
 		remove(infoDisplay);
+		remove(itemLabelDisplay);
 		itemDisplay = null;
 		infoDisplay = null;
+		itemLabelDisplay = null;
 		haloTick = 0L;
 	}
 
@@ -500,6 +554,11 @@ public final class VenueDisplayController implements Listener {
 		if (entity != null && entity.isValid()) {
 			entity.remove();
 		}
+	}
+
+	static @NotNull Component buildItemLabel(@NotNull VenueDisplayState state) {
+		return Component.text(state.itemName(), NamedTextColor.WHITE)
+				.append(Component.text(" × " + state.itemAmount(), NamedTextColor.GOLD));
 	}
 
 	static @NotNull Component buildInformation(@NotNull VenueDisplayState state) {
