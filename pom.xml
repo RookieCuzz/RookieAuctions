@@ -9,7 +9,7 @@
     <version>${revision}</version>
 
     <properties>
-        <revision>0.0.0-SNAPSHOT</revision>
+        <revision>0.0.1</revision>
         <maven.compiler.release>21</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <adventure.version>4.24.0</adventure.version>

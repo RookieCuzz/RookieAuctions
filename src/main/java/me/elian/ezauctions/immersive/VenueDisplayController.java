@@ -8,6 +8,7 @@ import me.elian.ezauctions.scheduler.TaskScheduler;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
+import org.bukkit.Chunk;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Particle;
@@ -20,25 +21,41 @@ import org.bukkit.entity.TextDisplay;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
-import org.bukkit.event.world.ChunkLoadEvent;
+import org.bukkit.event.world.EntitiesLoadEvent;
+import org.bukkit.event.world.WorldUnloadEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.util.Transformation;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-/** Owns the two PDC-tagged native display entities for the single auction venue. */
+/** Owns the three PDC-tagged native display entities for the single auction venue. */
 @Singleton
 public final class VenueDisplayController implements Listener {
 	private static final String ITEM_ROLE = "item";
 	private static final String INFO_ROLE = "info";
 	private static final String ITEM_LABEL_ROLE = "item-label";
+	private static final ChunkTicketAccess BUKKIT_CHUNK_TICKETS = new ChunkTicketAccess() {
+		@Override
+		public void add(Chunk chunk, Plugin plugin) {
+			chunk.addPluginChunkTicket(plugin);
+		}
+
+		@Override
+		public void remove(Chunk chunk, Plugin plugin) {
+			chunk.removePluginChunkTicket(plugin);
+		}
+	};
+	static final int DISPLAY_RECOVERY_INTERVAL_TICKS = 20;
 	static final long PREVIEW_DEAL_DELAY_SECONDS = 5L;
 	static final long PREVIEW_DURATION_SECONDS = 10L;
 	private final Plugin plugin;
@@ -46,11 +63,14 @@ public final class VenueDisplayController implements Listener {
 	private final VenueConfig venueConfig;
 	private final AuctioneerNpcFeedback auctioneerNpcFeedback;
 	private final Logger logger;
+	private final ChunkTicketAccess chunkTicketAccess;
 	private final NamespacedKey roleKey;
 	private final AtomicReference<VenueDisplayState> latest = new AtomicReference<>();
 	private final AtomicLong updateRevision = new AtomicLong();
 	private final AtomicBoolean started = new AtomicBoolean();
 	private final PreviewWindow previewWindow = new PreviewWindow();
+	private final RecoveryGate recoveryGate = new RecoveryGate(DISPLAY_RECOVERY_INTERVAL_TICKS);
+	private final Set<ChunkKey> chunkTickets = new HashSet<>();
 	private volatile ItemDisplay itemDisplay;
 	private volatile TextDisplay infoDisplay;
 	private volatile TextDisplay itemLabelDisplay;
@@ -58,17 +78,27 @@ public final class VenueDisplayController implements Listener {
 	private volatile CancellableTask previewCountdownTask;
 	private float spinDegrees;
 	private long haloTick;
+	private boolean recoveryFailureLogged;
 
 	@Inject
 	public VenueDisplayController(@NotNull Plugin plugin, @NotNull TaskScheduler scheduler,
 	                              @NotNull VenueConfig venueConfig,
 	                              @NotNull AuctioneerNpcFeedback auctioneerNpcFeedback,
 	                              @NotNull Logger logger) {
+		this(plugin, scheduler, venueConfig, auctioneerNpcFeedback, logger, BUKKIT_CHUNK_TICKETS);
+	}
+
+	VenueDisplayController(@NotNull Plugin plugin, @NotNull TaskScheduler scheduler,
+	                       @NotNull VenueConfig venueConfig,
+	                       @NotNull AuctioneerNpcFeedback auctioneerNpcFeedback,
+	                       @NotNull Logger logger,
+	                       @NotNull ChunkTicketAccess chunkTicketAccess) {
 		this.plugin = plugin;
 		this.scheduler = scheduler;
 		this.venueConfig = venueConfig;
 		this.auctioneerNpcFeedback = auctioneerNpcFeedback;
 		this.logger = logger;
+		this.chunkTicketAccess = chunkTicketAccess;
 		this.roleKey = new NamespacedKey(plugin, "immersive-venue-display");
 	}
 
@@ -171,19 +201,25 @@ public final class VenueDisplayController implements Listener {
 		}
 	}
 
-	/** Removes persistent crash-left displays when their chunk is loaded later. */
+	/** Removes crash-left displays after their entity data has actually been materialized. */
 	@EventHandler
-	public void onChunkLoad(ChunkLoadEvent event) {
-		for (Entity entity : event.getChunk().getEntities()) {
-			if (!entity.getPersistentDataContainer().has(roleKey, PersistentDataType.STRING)) {
-				continue;
-			}
-			if ((itemDisplay == null || !itemDisplay.getUniqueId().equals(entity.getUniqueId()))
-					&& (infoDisplay == null || !infoDisplay.getUniqueId().equals(entity.getUniqueId()))
-					&& (itemLabelDisplay == null
-					|| !itemLabelDisplay.getUniqueId().equals(entity.getUniqueId()))) {
-				entity.remove();
-			}
+	public void onEntitiesLoad(EntitiesLoadEvent event) {
+		removeNonCanonicalOwnedDisplays(event.getEntities());
+	}
+
+	/** World shutdown invalidates entity wrappers and implicitly releases Bukkit chunk tickets. */
+	@EventHandler
+	public void onWorldUnload(WorldUnloadEvent event) {
+		UUID worldId = event.getWorld().getUID();
+		chunkTickets.removeIf(key -> key.worldId().equals(worldId));
+		if (belongsToWorld(itemDisplay, worldId)) {
+			itemDisplay = null;
+		}
+		if (belongsToWorld(infoDisplay, worldId)) {
+			infoDisplay = null;
+		}
+		if (belongsToWorld(itemLabelDisplay, worldId)) {
+			itemLabelDisplay = null;
 		}
 	}
 
@@ -246,7 +282,14 @@ public final class VenueDisplayController implements Listener {
 		}
 
 		VenueLayout layout = resolution.resolvedLayout().orElseThrow();
-		ensureDisplays(layout);
+		Set<ChunkKey> desiredChunks = desiredChunks(layout);
+		acquireChunkTickets(desiredChunks);
+		try {
+			removeNonCanonicalOwnedDisplays(desiredChunks);
+			ensureDisplays(layout);
+		} finally {
+			releaseObsoleteChunkTickets(desiredChunks);
+		}
 		ItemDisplay itemEntity = itemDisplay;
 		TextDisplay infoEntity = infoDisplay;
 		TextDisplay itemLabelEntity = itemLabelDisplay;
@@ -348,7 +391,9 @@ public final class VenueDisplayController implements Listener {
 		entity.setGravity(false);
 		entity.setInvulnerable(true);
 		entity.setSilent(true);
-		entity.setPersistent(true);
+		// Venue displays are projections. Persisting them makes stale instances survive
+		// chunk unloads and turns a transient rendering failure into permanent world data.
+		entity.setPersistent(false);
 		entity.getPersistentDataContainer().set(roleKey, PersistentDataType.STRING, role);
 	}
 
@@ -376,11 +421,23 @@ public final class VenueDisplayController implements Listener {
 		if (state == null || (!previewWindow.active() && !venueConfig.isEnabled())) {
 			return;
 		}
-		ItemDisplay display = itemDisplay;
-		if (display == null || !display.isValid() || display.isDead()) {
+		if (!allRequiredDisplaysUsable()) {
+			if (!recoveryGate.shouldAttempt(false)) {
+				return;
+			}
 			renderNow(state, previewWindow.active());
-			display = itemDisplay;
+			if (!allRequiredDisplaysUsable()) {
+				if (!recoveryFailureLogged) {
+					logger.severe("Immersive venue displays remain invalid after recovery; "
+							+ "retrying at a bounded interval instead of every tick");
+					recoveryFailureLogged = true;
+				}
+				return;
+			}
 		}
+		recoveryGate.shouldAttempt(true);
+		recoveryFailureLogged = false;
+		ItemDisplay display = itemDisplay;
 		if (display == null || !display.isValid()) {
 			return;
 		}
@@ -514,6 +571,15 @@ public final class VenueDisplayController implements Listener {
 				&& entity.getWorld().getUID().equals(expected.getWorld().getUID());
 	}
 
+	private boolean allRequiredDisplaysUsable() {
+		return usable(itemDisplay) && usable(infoDisplay)
+				&& (!venueConfig.itemLabelEnabled() || usable(itemLabelDisplay));
+	}
+
+	private boolean usable(Entity entity) {
+		return entity != null && entity.isValid() && !entity.isDead();
+	}
+
 	private boolean samePosition(Location first, Location second) {
 		return sameCoordinates(first, second)
 				&& Math.abs(first.getYaw() - second.getYaw()) < 0.01F
@@ -527,32 +593,180 @@ public final class VenueDisplayController implements Listener {
 	}
 
 	private void cleanupOrphansNow() {
+		int removed = 0;
 		for (World world : plugin.getServer().getWorlds()) {
 			for (Entity entity : world.getEntities()) {
-				if (entity.getPersistentDataContainer().has(roleKey, PersistentDataType.STRING)) {
+				if (isOwnedDisplay(entity)) {
 					entity.remove();
+					removed++;
 				}
 			}
 		}
-		itemDisplay = null;
-		infoDisplay = null;
-		itemLabelDisplay = null;
-		haloTick = 0L;
+		forgetDisplayReferences();
+		releaseAllChunkTickets();
+		if (removed > 0) {
+			logger.warning("Removed " + removed + " crash-left immersive venue display entities");
+		}
 	}
 
 	private void removeOwnedDisplaysNow() {
 		remove(itemDisplay);
 		remove(infoDisplay);
 		remove(itemLabelDisplay);
+		removeAllOwnedDisplays(chunkTickets);
+		forgetDisplayReferences();
+		releaseAllChunkTickets();
+	}
+
+	private void forgetDisplayReferences() {
 		itemDisplay = null;
 		infoDisplay = null;
 		itemLabelDisplay = null;
 		haloTick = 0L;
+		recoveryGate.reset();
+		recoveryFailureLogged = false;
 	}
 
 	private void remove(Entity entity) {
-		if (entity != null && entity.isValid()) {
+		if (entity != null) {
 			entity.remove();
+		}
+	}
+
+	private Set<ChunkKey> desiredChunks(VenueLayout layout) {
+		Set<ChunkKey> desired = new HashSet<>();
+		desired.add(ChunkKey.from(layout.itemDisplay()));
+		desired.add(ChunkKey.from(layout.infoDisplay()));
+		return desired;
+	}
+
+	private void acquireChunkTickets(Set<ChunkKey> desired) {
+		for (ChunkKey key : desired) {
+			if (chunkTickets.contains(key)) {
+				continue;
+			}
+			World world = Objects.requireNonNull(plugin.getServer().getWorld(key.worldId()),
+					"immersive venue world " + key.worldId());
+			Chunk chunk = world.getChunkAt(key.x(), key.z());
+			chunkTicketAccess.add(chunk, plugin);
+			chunkTickets.add(key);
+		}
+	}
+
+	private void releaseObsoleteChunkTickets(Set<ChunkKey> desired) {
+		for (ChunkKey key : Set.copyOf(chunkTickets)) {
+			if (!desired.contains(key)) {
+				releaseChunkTicket(key);
+			}
+		}
+	}
+
+	private void releaseAllChunkTickets() {
+		for (ChunkKey key : Set.copyOf(chunkTickets)) {
+			releaseChunkTicket(key);
+		}
+	}
+
+	private void releaseChunkTicket(ChunkKey key) {
+		chunkTickets.remove(key);
+		World world = plugin.getServer().getWorld(key.worldId());
+		if (world != null && world.isChunkLoaded(key.x(), key.z())) {
+			chunkTicketAccess.remove(world.getChunkAt(key.x(), key.z()), plugin);
+		}
+	}
+
+	private void removeNonCanonicalOwnedDisplays(Set<ChunkKey> chunks) {
+		for (ChunkKey key : chunks) {
+			World world = plugin.getServer().getWorld(key.worldId());
+			if (world == null || !world.isChunkLoaded(key.x(), key.z())) {
+				continue;
+			}
+			removeNonCanonicalOwnedDisplays(
+					java.util.List.of(world.getChunkAt(key.x(), key.z()).getEntities()));
+		}
+	}
+
+	private void removeNonCanonicalOwnedDisplays(Iterable<? extends Entity> entities) {
+		int removed = 0;
+		for (Entity entity : entities) {
+			if (isOwnedDisplay(entity) && !isCanonicalDisplay(entity)) {
+				entity.remove();
+				removed++;
+			}
+		}
+		if (removed > 0) {
+			logger.warning("Removed " + removed + " duplicate immersive venue display entities");
+		}
+	}
+
+	private void removeAllOwnedDisplays(Set<ChunkKey> chunks) {
+		for (ChunkKey key : Set.copyOf(chunks)) {
+			World world = plugin.getServer().getWorld(key.worldId());
+			if (world == null || !world.isChunkLoaded(key.x(), key.z())) {
+				continue;
+			}
+			for (Entity entity : world.getChunkAt(key.x(), key.z()).getEntities()) {
+				if (isOwnedDisplay(entity)) {
+					entity.remove();
+				}
+			}
+		}
+	}
+
+	private boolean isOwnedDisplay(Entity entity) {
+		return entity.getPersistentDataContainer().has(roleKey, PersistentDataType.STRING);
+	}
+
+	private boolean isCanonicalDisplay(Entity entity) {
+		return sameValidEntity(itemDisplay, entity)
+				|| sameValidEntity(infoDisplay, entity)
+				|| sameValidEntity(itemLabelDisplay, entity);
+	}
+
+	private boolean sameValidEntity(Entity reference, Entity candidate) {
+		return usable(reference) && reference.getUniqueId().equals(candidate.getUniqueId());
+	}
+
+	private boolean belongsToWorld(Entity entity, UUID worldId) {
+		return entity != null && entity.getWorld().getUID().equals(worldId);
+	}
+
+	record ChunkKey(UUID worldId, int x, int z) {
+		static ChunkKey from(Location location) {
+			World world = Objects.requireNonNull(location.getWorld(), "display world");
+			return new ChunkKey(world.getUID(), location.getBlockX() >> 4, location.getBlockZ() >> 4);
+		}
+	}
+
+	interface ChunkTicketAccess {
+		void add(Chunk chunk, Plugin plugin);
+
+		void remove(Chunk chunk, Plugin plugin);
+	}
+
+	static final class RecoveryGate {
+		private final int intervalTicks;
+		private int cooldownTicks;
+
+		RecoveryGate(int intervalTicks) {
+			this.intervalTicks = Math.max(1, intervalTicks);
+		}
+
+		boolean shouldAttempt(boolean healthy) {
+			if (healthy) {
+				reset();
+				return false;
+			}
+			if (cooldownTicks > 0) {
+				cooldownTicks--;
+				return false;
+			}
+			cooldownTicks = intervalTicks - 1;
+			return true;
+		}
+
+		void reset() {
+			cooldownTicks = 0;
 		}
 	}
 

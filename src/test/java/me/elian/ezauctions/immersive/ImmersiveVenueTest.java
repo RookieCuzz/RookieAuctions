@@ -107,6 +107,23 @@ class ImmersiveVenueTest {
 	}
 
 	@Test
+	void invalidDisplayRecoveryIsBoundedAndResetsAfterAHealthyTick() {
+		VenueDisplayController.RecoveryGate gate =
+				new VenueDisplayController.RecoveryGate(
+						VenueDisplayController.DISPLAY_RECOVERY_INTERVAL_TICKS);
+		int attempts = 0;
+		for (int tick = 0; tick < 10_000; tick++) {
+			if (gate.shouldAttempt(false)) {
+				attempts++;
+			}
+		}
+
+		assertEquals(500, attempts, "An invalid display must not trigger a spawn every tick");
+		assertFalse(gate.shouldAttempt(true));
+		assertTrue(gate.shouldAttempt(false), "A healthy observation must reset recovery backoff");
+	}
+
+	@Test
 	void previewPinsItsStateForTenSecondsThenRestoresTheNewestLiveState() {
 		VenueDisplayState liveBefore = VenueDisplayState.idle("午场", 1, 16);
 		VenueDisplayState preview = VenueDisplayState.lot("场地预览", 1, 16,
