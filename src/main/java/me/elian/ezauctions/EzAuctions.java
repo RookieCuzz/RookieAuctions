@@ -15,7 +15,10 @@ import me.elian.ezauctions.data.Database;
 import me.elian.ezauctions.gui.AuctionGuiController;
 import me.elian.ezauctions.immersive.AuctioneerNpcFeedback;
 import me.elian.ezauctions.immersive.AttendanceService;
+import me.elian.ezauctions.immersive.AuctionStairSeatController;
+import me.elian.ezauctions.immersive.HolographicBidMenuController;
 import me.elian.ezauctions.immersive.ImmersiveAuctionInputListener;
+import me.elian.ezauctions.immersive.VenueConfig;
 import me.elian.ezauctions.scheduler.BukkitTaskScheduler;
 import me.elian.ezauctions.scheduler.TaskScheduler;
 import net.milkbowl.vault.economy.Economy;
@@ -42,6 +45,8 @@ public class EzAuctions extends JavaPlugin {
 	private AuctionGuiController auctionGuiController;
 	private AuctionSessionController auctionSessionController;
 	private ImmersiveAuctionInputListener immersiveInputListener;
+	private AuctionStairSeatController stairSeats;
+	private HolographicBidMenuController holographicBidMenu;
 	private AuctioneerNpcFeedback auctioneerNpcFeedback;
 	private Injector injector;
 
@@ -76,11 +81,17 @@ public class EzAuctions extends JavaPlugin {
 		auctionGuiController = injector.getInstance(AuctionGuiController.class);
 		auctionSessionController = injector.getInstance(AuctionSessionController.class);
 		AttendanceService attendance = injector.getInstance(AttendanceService.class);
+		holographicBidMenu = injector.getInstance(HolographicBidMenuController.class);
+		stairSeats = new AuctionStairSeatController(this, injector.getInstance(VenueConfig.class),
+				holographicBidMenu::show, holographicBidMenu::hide);
+		holographicBidMenu.bindSeats(stairSeats);
 		immersiveInputListener = new ImmersiveAuctionInputListener(this, scheduler, attendance,
 				auctionGuiController::openBidPanel);
 		auctioneerNpcFeedback = injector.getInstance(AuctioneerNpcFeedback.class);
 		auctioneerNpcFeedback.start();
 		auctionSessionController.start();
+		holographicBidMenu.start();
+		stairSeats.start();
 		immersiveInputListener.start();
 
 		updateController = injector.getInstance(UpdateController.class);
@@ -94,6 +105,14 @@ public class EzAuctions extends JavaPlugin {
 
 	@Override
 	public void onDisable() {
+		if (stairSeats != null) {
+			stairSeats.shutdown();
+		}
+
+		if (holographicBidMenu != null) {
+			holographicBidMenu.shutdown();
+		}
+
 		if (immersiveInputListener != null) {
 			immersiveInputListener.shutdown();
 		}

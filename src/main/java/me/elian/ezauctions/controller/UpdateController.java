@@ -45,7 +45,7 @@ public class UpdateController implements Listener {
 	private final MessageController messages;
 	private final String serverMinecraftVersion;
 	private final String serverPluginVersion;
-	private final HttpClient client;
+	private HttpClient client;
 
 	private String latestSupportedPluginVersion;
 
@@ -60,7 +60,14 @@ public class UpdateController implements Listener {
 
 		serverMinecraftVersion = getServerMinecraftVersion();
 		serverPluginVersion = plugin.getDescription().getVersion();
-		client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
+	}
+
+	/** Update checks are optional, so starting the plugin must not require HTTP networking. */
+	private synchronized HttpClient client() {
+		if (client == null) {
+			client = HttpClient.newBuilder().followRedirects(HttpClient.Redirect.NORMAL).build();
+		}
+		return client;
 	}
 
 	public String getServerPluginVersion() {
@@ -128,7 +135,7 @@ public class UpdateController implements Listener {
 		String url = "https://api.github.com/repos/" + GITHUB_REPO + "/tags";
 		HttpRequest request = HttpRequest.newBuilder(URI.create(url)).build();
 
-		String response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+		String response = client().sendAsync(request, HttpResponse.BodyHandlers.ofString())
 				.thenApply(HttpResponse::body)
 				.get();
 
@@ -159,7 +166,7 @@ public class UpdateController implements Listener {
 				+ GITHUB_REPO + "/" + tagName + "/src/main/resources/plugin.yml";
 		HttpRequest request = HttpRequest.newBuilder(URI.create(url)).build();
 
-		String response = client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+		String response = client().sendAsync(request, HttpResponse.BodyHandlers.ofString())
 				.thenApply(HttpResponse::body)
 				.get();
 
@@ -180,7 +187,7 @@ public class UpdateController implements Listener {
 		String releaseUrl =
 				"https://api.github.com/repos/" + GITHUB_REPO + "/releases/tags/" + latestSupportedPluginVersion;
 		HttpRequest request = HttpRequest.newBuilder(URI.create(releaseUrl)).build();
-		String releaseJson = client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+		String releaseJson = client().sendAsync(request, HttpResponse.BodyHandlers.ofString())
 				.thenApply(HttpResponse::body)
 				.get();
 
@@ -210,7 +217,7 @@ public class UpdateController implements Listener {
 				.header("Accept", "application/octet-stream")
 				.build();
 		HttpResponse<InputStream> downloadResponse =
-				client.sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()).join();
+				client().sendAsync(request, HttpResponse.BodyHandlers.ofInputStream()).join();
 
 		if (downloadResponse.statusCode() >= 200 && downloadResponse.statusCode() < 300) {
 			try {

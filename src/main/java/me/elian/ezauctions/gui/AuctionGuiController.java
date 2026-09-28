@@ -12,6 +12,7 @@ import me.elian.ezauctions.data.Database;
 import me.elian.ezauctions.event.AuctionStartEvent;
 import me.elian.ezauctions.helper.ItemHelper;
 import me.elian.ezauctions.immersive.AttendanceService;
+import me.elian.ezauctions.immersive.BidMenuAction;
 import me.elian.ezauctions.model.Auction;
 import me.elian.ezauctions.model.AuctionData;
 import me.elian.ezauctions.model.AuctionPlayer;
@@ -161,6 +162,76 @@ public final class AuctionGuiController implements Listener {
 				}, player));
 	}
 
+	/** Uses the existing bid confirmation and authorization path for a hologram button. */
+	public void openHologramBidChoice(@NotNull Player player, @NotNull BidMenuAction choice,
+	                                  @NotNull UUID expectedAuctionId, long expectedRevision) {
+		if (!player.isOnline() || !player.isInsideVehicle() || !canBidHere(player)) {
+			signal(player, false, "请坐在会场座位上并进入正在进行的拍卖场次");
+			return;
+		}
+		GuiSession session = sessions.computeIfAbsent(player.getUniqueId(), ignored -> new GuiSession());
+		if (session.viewer != null) {
+			openHologramBidChoice(player, session, choice, expectedAuctionId, expectedRevision);
+			return;
+		}
+		players.getPlayer(player).whenComplete((auctionPlayer, error) ->
+				scheduler.runPlayerRegionTask(() -> {
+					if (!player.isOnline() || !player.isInsideVehicle() || !canBidHere(player)) {
+						return;
+					}
+					if (error != null || auctionPlayer == null) {
+						signal(player, false, "玩家数据加载失败");
+						return;
+					}
+					session.viewer = auctionPlayer;
+					openHologramBidChoice(player, session, choice, expectedAuctionId, expectedRevision);
+				}, player));
+	}
+
+	private void openHologramBidChoice(@NotNull Player player, @NotNull GuiSession session,
+	                                   @NotNull BidMenuAction choice,
+	                                   @NotNull UUID expectedAuctionId, long expectedRevision) {
+		if (!player.isOnline() || !player.isInsideVehicle() || !canBidHere(player)) {
+			return;
+		}
+		Auction active = auctions.getActiveAuction();
+		if (active == null) {
+			signal(player, false, "当前没有正在竞拍的物品");
+			return;
+		}
+		AuctionView view = active.viewFor(session.viewer);
+		if (!view.running()) {
+			signal(player, false, "当前拍品已结束");
+			return;
+		}
+		if (!view.auctionId().equals(expectedAuctionId) || view.revision() != expectedRevision) {
+			signal(player, false, "竞拍状态已变化，请重新确认");
+			return;
+		}
+		session.returnPage = GuiPage.HOLOGRAM_MENU;
+		long minimum = minimumBid(view);
+		switch (choice) {
+			case MINIMUM -> openBidConfirmation(player, session, view, minimum, false);
+			case ONE_STEP -> openBidConfirmation(player, session, view,
+					safeAdd(minimum, view.incrementMinor()), false);
+			case FIVE_STEPS -> openBidConfirmation(player, session, view,
+					safeAdd(minimum, safeMultiply(view.incrementMinor(), 5L)), false);
+			case TEN_STEPS -> openBidConfirmation(player, session, view,
+					safeAdd(minimum, safeMultiply(view.incrementMinor(), 10L)), false);
+			case CUSTOM -> {
+				session.selectedAuctionId = view.auctionId();
+				session.selectedRevision = view.revision();
+				openAnvil(player, session, GuiSession.InputTarget.BID, GuiPage.HOLOGRAM_MENU,
+						Long.toString(Math.max(1L, minimum / Money.MINOR_UNITS_PER_MAJOR)));
+			}
+			case BUYOUT -> {
+				if (view.autoBuyMinor() > 0) {
+					openBidConfirmation(player, session, view, view.autoBuyMinor(), true);
+				}
+			}
+		}
+	}
+
 	public void open(@NotNull Player player) {
 		GuiSession session = sessions.computeIfAbsent(player.getUniqueId(), ignored -> new GuiSession());
 		if (session.viewer != null) {
@@ -223,6 +294,7 @@ public final class AuctionGuiController implements Listener {
 		switch (holder.getPage()) {
 			case CURRENT -> handleCurrentClick(player, session, holder, event.getRawSlot());
 			case BID_PANEL -> handleBidPanelClick(player, session, holder, event.getRawSlot());
+			case HOLOGRAM_MENU -> { }
 			case BID_CONFIRM -> handleBidConfirmation(player, session, event.getRawSlot());
 			case QUEUE -> handleQueueClick(player, session, event.getRawSlot());
 			case QUEUE_DETAIL -> handleQueueDetailClick(player, session, event.getRawSlot());
@@ -718,7 +790,9 @@ public final class AuctionGuiController implements Listener {
 	}
 
 	private void openBidReturn(@NotNull Player player, @NotNull GuiSession session) {
-		if (session.returnPage == GuiPage.BID_PANEL && attendance.isActive(player.getUniqueId())) {
+		if (session.returnPage == GuiPage.HOLOGRAM_MENU) {
+			player.closeInventory();
+		} else if (session.returnPage == GuiPage.BID_PANEL && attendance.isActive(player.getUniqueId())) {
 			openBidPanel(player, session);
 		} else {
 			openCurrent(player, session);
