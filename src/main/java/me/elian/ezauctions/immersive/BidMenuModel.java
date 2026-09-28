@@ -20,7 +20,7 @@ record BidMenuModel(@NotNull String heading, @NotNull Map<BidMenuAction, String>
 		for (BidMenuAction action : BidMenuAction.values()) {
 			buttons.put(action, "");
 		}
-		return new BidMenuModel("拍卖加价\n" + reason + "\nShift 起身", Map.copyOf(buttons),
+		return new BidMenuModel("拍卖加价\n" + reason, Map.copyOf(buttons),
 				null, 0L, false, false);
 	}
 
@@ -30,18 +30,19 @@ record BidMenuModel(@NotNull String heading, @NotNull Map<BidMenuAction, String>
 		}
 		long minimum = minimumBid(view);
 		EnumMap<BidMenuAction, String> buttons = new EnumMap<>(BidMenuAction.class);
-		buttons.put(BidMenuAction.MINIMUM, "最低有效价  $" + Money.format(minimum));
+		buttons.put(BidMenuAction.MINIMUM, "最低有效价\n$" + Money.format(cappedByBuyout(view, minimum)));
 		buttons.put(BidMenuAction.ONE_STEP,
-				"+1 档  $" + Money.format(saturatedAdd(minimum, view.incrementMinor())));
+				"+1 档\n$" + Money.format(cappedByBuyout(view,
+						saturatedAdd(minimum, view.incrementMinor()))));
 		buttons.put(BidMenuAction.FIVE_STEPS,
-				"+5 档  $" + Money.format(saturatedAdd(minimum,
-						saturatedMultiply(view.incrementMinor(), 5L))));
+				"+5 档\n$" + Money.format(cappedByBuyout(view, saturatedAdd(minimum,
+						saturatedMultiply(view.incrementMinor(), 5L)))));
 		buttons.put(BidMenuAction.TEN_STEPS,
-				"+10 档  $" + Money.format(saturatedAdd(minimum,
-						saturatedMultiply(view.incrementMinor(), 10L))));
-		buttons.put(BidMenuAction.CUSTOM, "自定义出价");
+				"+10 档\n$" + Money.format(cappedByBuyout(view, saturatedAdd(minimum,
+						saturatedMultiply(view.incrementMinor(), 10L)))));
+		buttons.put(BidMenuAction.CUSTOM, "自定义\n输入金额");
 		buttons.put(BidMenuAction.BUYOUT, view.autoBuyMinor() > 0
-				? "一口价  $" + Money.format(view.autoBuyMinor()) : "未启用一口价");
+				? "一口买下\n$" + Money.format(view.autoBuyMinor()) : "一口价\n未启用");
 
 		String price = view.sealed()
 				? "密封报价 · 你的最高价 " + (view.viewerHighestBidMinor() > 0
@@ -50,7 +51,7 @@ record BidMenuModel(@NotNull String heading, @NotNull Map<BidMenuAction, String>
 		String heading = "拍卖加价 · " + (view.sealed() ? "密封" : "公开")
 				+ "\n" + readableName(view.item()) + " × " + view.amount()
 				+ " · " + formatTime(view.remainingSeconds())
-				+ "\n" + price + " · 右键选择 · Shift 起身";
+				+ "\n" + price;
 		boolean canBid = !view.bidProcessing()
 				&& (!view.sealed() || view.viewerRemainingBidCount() > 0);
 		return new BidMenuModel(heading, Map.copyOf(buttons), view.auctionId(),
@@ -70,6 +71,10 @@ record BidMenuModel(@NotNull String heading, @NotNull Map<BidMenuAction, String>
 		return view.highestBidderId() == null
 				? view.startingPriceMinor()
 				: saturatedAdd(view.currentPriceMinor(), view.incrementMinor());
+	}
+
+	private static long cappedByBuyout(AuctionView view, long amount) {
+		return view.autoBuyMinor() > 0 ? Math.min(amount, view.autoBuyMinor()) : amount;
 	}
 
 	private static long saturatedAdd(long first, long second) {

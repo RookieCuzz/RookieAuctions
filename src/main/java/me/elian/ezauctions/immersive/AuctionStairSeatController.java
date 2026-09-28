@@ -263,9 +263,10 @@ public final class AuctionStairSeatController implements Listener {
 	}
 
 	private static Location seatLocation(Block block, Stairs stairs, Player player) {
-		// A marker armor stand has no collision box; its passenger sits at its location.
+		// Paper positions a marker armor stand's passenger about 0.68 blocks below
+		// the stand. Place the passenger's feet at the stair's sitting surface.
 		double surface = stairs.getHalf() == Bisected.Half.TOP ? 1D : 0.5D;
-		Location location = block.getLocation().add(0.5D, surface - 0.05D, 0.5D);
+		Location location = block.getLocation().clone().add(0.5D, surface + 0.63D, 0.5D);
 		location.setYaw(player.getLocation().getYaw());
 		return location;
 	}

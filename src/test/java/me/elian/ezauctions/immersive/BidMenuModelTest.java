@@ -39,11 +39,11 @@ class BidMenuModelTest {
 		assertTrue(model.heading().contains("当前价 $17.50"));
 		assertFalse(model.heading().contains("你的最高价"));
 		assertEquals(2_000L, BidMenuModel.minimumBid(view));
-		assertEquals("最低有效价  $20.00", model.buttons().get(BidMenuAction.MINIMUM));
-		assertEquals("+1 档  $22.50", model.buttons().get(BidMenuAction.ONE_STEP));
-		assertEquals("+5 档  $32.50", model.buttons().get(BidMenuAction.FIVE_STEPS));
-		assertEquals("+10 档  $45.00", model.buttons().get(BidMenuAction.TEN_STEPS));
-		assertEquals("一口价  $100.00", model.buttons().get(BidMenuAction.BUYOUT));
+		assertEquals("最低有效价\n$20.00", model.buttons().get(BidMenuAction.MINIMUM));
+		assertEquals("+1 档\n$22.50", model.buttons().get(BidMenuAction.ONE_STEP));
+		assertEquals("+5 档\n$32.50", model.buttons().get(BidMenuAction.FIVE_STEPS));
+		assertEquals("+10 档\n$45.00", model.buttons().get(BidMenuAction.TEN_STEPS));
+		assertEquals("一口买下\n$100.00", model.buttons().get(BidMenuAction.BUYOUT));
 		assertTrue(model.enabled(BidMenuAction.MINIMUM));
 		assertTrue(model.enabled(BidMenuAction.BUYOUT));
 	}
@@ -60,9 +60,9 @@ class BidMenuModelTest {
 		assertFalse(model.heading().contains("9,876.54"));
 		assertFalse(model.heading().contains("TOP_BIDDER_PRIVATE"));
 		assertEquals(1_250L, BidMenuModel.minimumBid(view));
-		assertEquals("最低有效价  $12.50", model.buttons().get(BidMenuAction.MINIMUM));
-		assertEquals("+1 档  $15.00", model.buttons().get(BidMenuAction.ONE_STEP));
-		assertEquals("未启用一口价", model.buttons().get(BidMenuAction.BUYOUT));
+		assertEquals("最低有效价\n$12.50", model.buttons().get(BidMenuAction.MINIMUM));
+		assertEquals("+1 档\n$15.00", model.buttons().get(BidMenuAction.ONE_STEP));
+		assertEquals("一口价\n未启用", model.buttons().get(BidMenuAction.BUYOUT));
 		for (BidMenuAction action : BidMenuAction.values()) {
 			assertFalse(model.enabled(action));
 		}
@@ -77,7 +77,7 @@ class BidMenuModelTest {
 
 		assertTrue(model.heading().contains("你的最高价 暂无"));
 		assertEquals(500L, BidMenuModel.minimumBid(view));
-		assertEquals("最低有效价  $5.00", model.buttons().get(BidMenuAction.MINIMUM));
+		assertEquals("最低有效价\n$5.00", model.buttons().get(BidMenuAction.MINIMUM));
 		assertTrue(model.enabled(BidMenuAction.MINIMUM));
 		assertFalse(model.enabled(BidMenuAction.BUYOUT));
 	}

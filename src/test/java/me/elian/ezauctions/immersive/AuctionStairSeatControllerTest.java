@@ -84,6 +84,7 @@ class AuctionStairSeatControllerTest {
 		try {
 			click(controller, first, stair);
 			assertTrue(controller.isSeated(first));
+			assertEquals(65, stair.getY(), "Creating the elevated seat must not move its source block");
 			assertEquals(1, sitCount.get());
 			assertEquals(1, world.getEntitiesByClass(ArmorStand.class).size());
 			assertFalse(world.getEntitiesByClass(ArmorStand.class).iterator().next().isPersistent());
@@ -94,8 +95,8 @@ class AuctionStairSeatControllerTest {
 			assertTrue(offhand.isCancelled());
 
 			click(controller, second, stair);
-			assertFalse(controller.isSeated(second));
 			assertEquals(1, sitCount.get());
+			assertFalse(controller.isSeated(second));
 
 			controller.shutdown();
 			assertFalse(controller.isSeated(first));
@@ -121,8 +122,8 @@ class AuctionStairSeatControllerTest {
 			click(controller, first, stair);
 			assertTrue(controller.isSeated(first));
 			controller.onBlockBreak(new BlockBreakEvent(stair, second));
-			assertFalse(controller.isSeated(first));
 			assertEquals(1, leaveCount.get());
+			assertFalse(controller.isSeated(first));
 			assertTrue(world.getEntitiesByClass(ArmorStand.class).isEmpty());
 
 			click(controller, second, stair);

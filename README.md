@@ -1,6 +1,6 @@
 # RookieAuctions
 
-RookieAuctions is a safe, immersive inventory-GUI auction plugin based on
+RookieAuctions is a safe, immersive auction plugin with inventory and holographic menus, based on
 [ezAuctions 2.4.4](https://github.com/elian1203/ezAuctions). It supports public and sealed bidding,
 two scheduled daily auction sessions, bid confirmation, auction history, reward claims,
 SQLite/MariaDB and Paper/Purpur 1.21.4.
@@ -28,6 +28,11 @@ for 120 seconds with a ten-second intermission. A full session has a base durati
 The immersive scheduler is disabled until an administrator configures the venue with
 `/auction admin venue set ...`, validates it, and enables it. Public sealed-auction displays never
 show the current price. Existing queued lots are assigned to the next sessions during migration.
+
+Inside an enabled venue, right-click a stair to sit and open a private holographic bid menu.
+Left-click a price, then left-click the floating confirmation button to bid without opening an
+inventory. Scroll the mouse wheel while seated to move the menu between 1.45 and 2.60 blocks
+from the player. Sneak to stand up.
 
 Back up `config.yml` and the SQLite/MariaDB database before upgrading an existing server. Generated
 sessions retain their persisted start time; schedule changes apply only to sessions created later.
